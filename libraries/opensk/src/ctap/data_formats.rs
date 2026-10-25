@@ -95,6 +95,12 @@ pub const FN_DSA_1024_ALGORITHM: i64 = -61;
 #[cfg(any(test, feature = "rs256"))]
 pub const RS256_ALGORITHM: i64 = -257;
 
+/// The maximum length of a Relying Party ID, in bytes.
+///
+/// The WebAuthn level 3 specification requires the RP ID to be a valid domain string, which
+/// RFC 1035 limits to 255 octets on the wire (or 253 bytes in presentation format).
+pub(crate) const MAX_RP_ID_LENGTH: usize = 253;
+
 // https://www.w3.org/TR/webauthn/#dictdef-publickeycredentialrpentity
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
@@ -261,6 +267,7 @@ pub enum AuthenticatorTransport {
     Usb,
     Nfc,
     Ble,
+    Hybrid,
     Internal,
 }
 
@@ -270,6 +277,7 @@ impl From<AuthenticatorTransport> for cbor::Value {
             AuthenticatorTransport::Usb => "usb",
             AuthenticatorTransport::Nfc => "nfc",
             AuthenticatorTransport::Ble => "ble",
+            AuthenticatorTransport::Hybrid => "hybrid",
             AuthenticatorTransport::Internal => "internal",
         }
         .into()
@@ -285,6 +293,7 @@ impl TryFrom<cbor::Value> for AuthenticatorTransport {
             "usb" => Ok(AuthenticatorTransport::Usb),
             "nfc" => Ok(AuthenticatorTransport::Nfc),
             "ble" => Ok(AuthenticatorTransport::Ble),
+            "hybrid" => Ok(AuthenticatorTransport::Hybrid),
             "internal" => Ok(AuthenticatorTransport::Internal),
             _ => Err(Ctap2StatusCode::CTAP2_ERR_CBOR_UNEXPECTED_TYPE),
         }
@@ -327,10 +336,15 @@ impl TryFrom<cbor::Value> for PublicKeyCredentialDescriptor {
         let transports = match transports {
             Some(exclude_entry) => {
                 let transport_vec = extract_array(exclude_entry)?;
-                let transports = transport_vec
-                    .into_iter()
-                    .map(AuthenticatorTransport::try_from)
-                    .collect::<CtapResult<Vec<AuthenticatorTransport>>>()?;
+                let mut transports = Vec::new();
+                for entry in transport_vec {
+                    let transport_string = extract_text_string(entry)?;
+                    if let Ok(transport) =
+                        AuthenticatorTransport::try_from(cbor::Value::from(transport_string))
+                    {
+                        transports.push(transport);
+                    }
+                }
                 Some(transports)
             }
             None => None,
@@ -1642,7 +1656,17 @@ impl TryFrom<cbor::Value> for SetMinPinLengthParams {
             Some(entry) => Some(
                 extract_array(entry)?
                     .into_iter()
-                    .map(extract_text_string)
+                    .map(|entry| {
+                        let rp_id = extract_text_string(entry)?;
+                        // An empty or longer entry is not a valid domain name, so compliant
+                        // platforms never send one. Such an input is only rejected later, when
+                        // storing the list fails because the serialized value is too large for
+                        // the persistent store.
+                        if rp_id.is_empty() || rp_id.len() > MAX_RP_ID_LENGTH {
+                            return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                        }
+                        Ok(rp_id)
+                    })
                     .collect::<CtapResult<Vec<String>>>()?,
             ),
             None => None,
@@ -2315,6 +2339,33 @@ mod test {
         assert_eq!(credential_descriptor, Ok(expected_credential_descriptor));
         let created_cbor: cbor::Value = credential_descriptor.unwrap().into();
         assert_eq!(created_cbor, cbor_credential_descriptor);
+
+        let cbor_unknown_transport_descriptor = cbor_map! {
+            "id" => vec![0x2D, 0x2D, 0x2D, 0x2D],
+            "type" => "public-key",
+            "transports" => cbor_array!["usb", "hybrid", "unknown-transport"],
+        };
+        assert_eq!(
+            PublicKeyCredentialDescriptor::try_from(cbor_unknown_transport_descriptor),
+            Ok(PublicKeyCredentialDescriptor {
+                key_type: PublicKeyCredentialType::PublicKey,
+                key_id: vec![0x2D, 0x2D, 0x2D, 0x2D],
+                transports: Some(vec![
+                    AuthenticatorTransport::Usb,
+                    AuthenticatorTransport::Hybrid,
+                ]),
+            })
+        );
+
+        let cbor_invalid_transport_descriptor = cbor_map! {
+            "id" => vec![0x2D, 0x2D, 0x2D, 0x2D],
+            "type" => "public-key",
+            "transports" => cbor_array![123],
+        };
+        assert_eq!(
+            PublicKeyCredentialDescriptor::try_from(cbor_invalid_transport_descriptor),
+            Err(CTAP2_ERR_CBOR_UNEXPECTED_TYPE)
+        );
     }
 
     #[test]
@@ -2843,6 +2894,46 @@ mod test {
         assert_eq!(cbor::Value::from(params.clone()), cbor_params);
         let reconstructed_params = SetMinPinLengthParams::try_from(cbor_params);
         assert_eq!(reconstructed_params, Ok(params));
+    }
+
+    #[test]
+    fn test_from_set_min_pin_length_params_empty_rp_id() {
+        let cbor_params = cbor_map! {
+            0x01 => 6,
+            0x02 => cbor_array!(""),
+            0x03 => true,
+        };
+        assert_eq!(
+            SetMinPinLengthParams::try_from(cbor_params),
+            Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER),
+        );
+    }
+
+    #[test]
+    fn test_from_set_min_pin_length_params_rp_id_too_long() {
+        let cbor_params = cbor_map! {
+            0x01 => 6,
+            0x02 => cbor_array!("r".repeat(MAX_RP_ID_LENGTH + 1)),
+            0x03 => true,
+        };
+        assert_eq!(
+            SetMinPinLengthParams::try_from(cbor_params),
+            Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER),
+        );
+    }
+
+    #[test]
+    fn test_from_set_min_pin_length_params_longest_rp_id() {
+        let params = SetMinPinLengthParams {
+            new_min_pin_length: Some(6),
+            min_pin_length_rp_ids: Some(vec!["r".repeat(MAX_RP_ID_LENGTH)]),
+            force_change_pin: None,
+        };
+        let cbor_params = cbor_map! {
+            0x01 => 6,
+            0x02 => cbor_array!("r".repeat(MAX_RP_ID_LENGTH)),
+        };
+        assert_eq!(SetMinPinLengthParams::try_from(cbor_params), Ok(params));
     }
 
     #[test]

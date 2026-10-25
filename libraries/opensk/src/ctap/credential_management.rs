@@ -17,11 +17,11 @@ use super::command::AuthenticatorCredentialManagementParameters;
 use super::data_formats::{
     CredentialManagementSubCommand, CredentialManagementSubCommandParameters,
     PublicKeyCredentialDescriptor, PublicKeyCredentialRpEntity, PublicKeyCredentialSource,
-    PublicKeyCredentialUserEntity,
+    PublicKeyCredentialType, PublicKeyCredentialUserEntity,
 };
 use super::response::{AuthenticatorCredentialManagementResponse, ResponseData};
 use super::status_code::Ctap2StatusCode;
-use super::{Channel, StatefulCommand, StatefulPermission};
+use super::{Channel, StatefulCommand, StatefulPermission, truncate_to_char_boundary};
 use crate::api::crypto::sha256::Sha256;
 use crate::api::customization::Customization;
 use crate::api::private_key::PrivateKey;
@@ -30,7 +30,7 @@ use crate::ctap::status_code::CtapResult;
 use crate::ctap::storage;
 use crate::env::{Env, Sha};
 use alloc::collections::BTreeSet;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -236,10 +236,12 @@ fn process_delete_credential<E: Env>(
 ) -> CtapResult<()> {
     let credential_id = sub_command_params
         .credential_id
-        .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?
-        .key_id;
-    check_rp_id_permissions(env, client_pin, &credential_id)?;
-    storage::delete_credential(env, &credential_id)
+        .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
+    if credential_id.key_type != PublicKeyCredentialType::PublicKey {
+        return Err(Ctap2StatusCode::CTAP2_ERR_NO_CREDENTIALS);
+    }
+    check_rp_id_permissions(env, client_pin, &credential_id.key_id)?;
+    storage::delete_credential(env, &credential_id.key_id)
 }
 
 /// Processes the subcommand updateUserInformation for CredentialManagement.
@@ -250,13 +252,27 @@ fn process_update_user_information<E: Env>(
 ) -> CtapResult<()> {
     let credential_id = sub_command_params
         .credential_id
-        .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?
-        .key_id;
-    let user = sub_command_params
+        .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
+    let mut user = sub_command_params
         .user
         .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
-    check_rp_id_permissions(env, client_pin, &credential_id)?;
-    storage::update_credential(env, &credential_id, user)
+    if credential_id.key_type != PublicKeyCredentialType::PublicKey {
+        return Err(Ctap2StatusCode::CTAP2_ERR_NO_CREDENTIALS);
+    }
+    check_rp_id_permissions(env, client_pin, &credential_id.key_id)?;
+    // This input is user provided, so we crop it to 64 byte for storage, like
+    // MakeCredential does. The UTF8 encoding is always preserved, so the string
+    // might end up shorter.
+    user.user_name = user
+        .user_name
+        .map(|s| truncate_to_char_boundary(&s, 64).to_string());
+    user.user_display_name = user
+        .user_display_name
+        .map(|s| truncate_to_char_boundary(&s, 64).to_string());
+    user.user_icon = user
+        .user_icon
+        .map(|s| truncate_to_char_boundary(&s, 64).to_string());
+    storage::update_credential(env, &credential_id.key_id, user)
 }
 
 /// Processes the CredentialManagement command and all its subcommands.
@@ -303,6 +319,7 @@ pub fn process_credential_management<E: Env>(
             }
             if client_pin
                 .verify_pin_uv_auth_token(
+                    env,
                     &management_data,
                     &pin_uv_auth_param,
                     pin_uv_auth_protocol,
@@ -330,6 +347,7 @@ pub fn process_credential_management<E: Env>(
                 super::cbor_write(sub_command_params.into(), &mut management_data)?;
             }
             client_pin.verify_pin_uv_auth_token(
+                env,
                 &management_data,
                 &pin_uv_auth_param,
                 pin_uv_auth_protocol,
@@ -894,7 +912,7 @@ mod test {
             key_id: vec![0x1D; 32],
             transports: None, // You can set USB as a hint here.
         };
-        let new_user = PublicKeyCredentialUserEntity {
+        let mismatched_user = PublicKeyCredentialUserEntity {
             user_id: vec![0xFF],
             user_name: Some("new_name".to_string()),
             user_display_name: Some("new_display_name".to_string()),
@@ -902,9 +920,45 @@ mod test {
         };
         let sub_command_params = CredentialManagementSubCommandParameters {
             rp_id_hash: None,
+            credential_id: Some(credential_id.clone()),
+            user: Some(mismatched_user),
+        };
+        let cred_management_params = AuthenticatorCredentialManagementParameters {
+            sub_command: CredentialManagementSubCommand::UpdateUserInformation,
+            sub_command_params: Some(sub_command_params),
+            pin_uv_auth_protocol: Some(PinUvAuthProtocol::V1),
+            pin_uv_auth_param,
+        };
+        let cred_management_response = process_credential_management(
+            &mut env,
+            &mut ctap_state.stateful_command_permission,
+            &mut ctap_state.client_pin,
+            cred_management_params,
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            cred_management_response,
+            Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)
+        );
+
+        let new_user = PublicKeyCredentialUserEntity {
+            user_id: vec![0x01],
+            user_name: Some("new_name".to_string()),
+            user_display_name: Some("new_display_name".to_string()),
+            user_icon: Some(String::new()),
+        };
+        let sub_command_params = CredentialManagementSubCommandParameters {
+            rp_id_hash: None,
             credential_id: Some(credential_id),
             user: Some(new_user),
         };
+        let mut auth_data = vec![CredentialManagementSubCommand::UpdateUserInformation as u8];
+        super::super::cbor_write(sub_command_params.clone().into(), &mut auth_data).unwrap();
+        let pin_uv_auth_param = Some(authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &auth_data,
+            PinUvAuthProtocol::V1,
+        ));
         let cred_management_params = AuthenticatorCredentialManagementParameters {
             sub_command: CredentialManagementSubCommand::UpdateUserInformation,
             sub_command_params: Some(sub_command_params),
@@ -932,7 +986,79 @@ mod test {
             &updated_credential.user_display_name.unwrap(),
             "new_display_name"
         );
-        assert_eq!(&updated_credential.user_icon.unwrap(), "new_icon");
+        assert_eq!(updated_credential.user_icon, None);
+    }
+
+    #[test]
+    fn test_process_update_user_information_truncates_long_names() {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x55; 32];
+        let client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            PinUvAuthProtocol::V1,
+        );
+        let mut credential_source = create_credential_source(&mut env);
+        credential_source.credential_id = vec![0x1D; 32];
+
+        let mut ctap_state = CtapState::new(&mut env);
+        ctap_state.client_pin = client_pin;
+
+        storage::store_credential(&mut env, credential_source).unwrap();
+        env.persist().set_pin(&[0u8; 16], 4).unwrap();
+
+        let credential_id = PublicKeyCredentialDescriptor {
+            key_type: PublicKeyCredentialType::PublicKey,
+            key_id: vec![0x1D; 32],
+            transports: None, // You can set USB as a hint here.
+        };
+        // The name is longer than the 64 bytes kept for storage, and the
+        // display name crosses the limit in the middle of a 2-byte character.
+        let new_user = PublicKeyCredentialUserEntity {
+            user_id: vec![0x01],
+            user_name: Some("n".repeat(100)),
+            user_display_name: Some(format!("{}é", "d".repeat(63))),
+            user_icon: None,
+        };
+        let sub_command_params = CredentialManagementSubCommandParameters {
+            rp_id_hash: None,
+            credential_id: Some(credential_id),
+            user: Some(new_user),
+        };
+        let mut management_data = vec![CredentialManagementSubCommand::UpdateUserInformation as u8];
+        super::super::cbor_write(sub_command_params.clone().into(), &mut management_data).unwrap();
+        let pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &management_data,
+            PinUvAuthProtocol::V1,
+        );
+
+        let cred_management_params = AuthenticatorCredentialManagementParameters {
+            sub_command: CredentialManagementSubCommand::UpdateUserInformation,
+            sub_command_params: Some(sub_command_params),
+            pin_uv_auth_protocol: Some(PinUvAuthProtocol::V1),
+            pin_uv_auth_param: Some(pin_uv_auth_param),
+        };
+        let cred_management_response = process_credential_management(
+            &mut env,
+            &mut ctap_state.stateful_command_permission,
+            &mut ctap_state.client_pin,
+            cred_management_params,
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            cred_management_response,
+            Ok(ResponseData::AuthenticatorCredentialManagement(None))
+        );
+
+        let updated_credential = storage::find_credential(&mut env, "example.com", &[0x1D; 32])
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated_credential.user_name.unwrap().len(), 64);
+        // The 64-byte cut is moved before the incomplete 2-byte character.
+        assert_eq!(updated_credential.user_display_name.unwrap().len(), 63);
     }
 
     #[test]

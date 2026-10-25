@@ -39,6 +39,7 @@ const DIGEST_INFO_PREFIX_SHA256: [u8; 19] = [
 ];
 
 /// Table of 256 small odd primes used for incremental candidate sieving.
+#[allow(dead_code)]
 const SMALL_PRIMES: [u16; 256] = [
     3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59,
     61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137,
@@ -179,6 +180,7 @@ fn derive_candidate_base(seed: &[u8; RS256_SEED_SIZE], label: &[u8]) -> U1024 {
 }
 
 /// Performs 4 rounds of Miller-Rabin primality testing with bases [2, 3, 5, 7].
+#[allow(dead_code)]
 fn miller_rabin(p: &U1024) -> bool {
     let p_minus_1 = p.wrapping_sub(&U1024::ONE);
     let s = p_minus_1.trailing_zeros();
@@ -214,6 +216,7 @@ fn miller_rabin(p: &U1024) -> bool {
 }
 
 /// Finds the next prime candidate `p = p0 + 2 * delta` using the incremental sieve and Miller-Rabin.
+#[allow(dead_code)]
 fn find_prime(seed: &[u8; RS256_SEED_SIZE], label: &[u8]) -> (U1024, u16) {
     let p0 = derive_candidate_base(seed, label);
     let mut rem = [0u16; SMALL_PRIMES.len()];

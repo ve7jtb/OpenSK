@@ -54,8 +54,9 @@ fn process_toggle_always_uv(env: &mut impl Env) -> CtapResult<ResponseData> {
 }
 
 /// Processes the subcommand setMinPINLength for AuthenticatorConfig.
-fn process_set_min_pin_length(
-    env: &mut impl Env,
+fn process_set_min_pin_length<E: Env>(
+    env: &mut E,
+    client_pin: &mut ClientPin<E>,
     params: SetMinPinLengthParams,
 ) -> CtapResult<ResponseData> {
     let SetMinPinLengthParams {
@@ -75,13 +76,19 @@ fn process_set_min_pin_length(
     if let Some(old_length) = env.persist().pin_code_point_length()? {
         force_change_pin |= new_min_pin_length > old_length;
     }
-    if force_change_pin {
-        env.persist().force_pin_change()?;
-    }
-    storage::set_min_pin_length(env, new_min_pin_length)?;
+    // Write the RP IDs first: this is the only step that can fail because of its
+    // input, so doing it before the other writes avoids leaving the minimum PIN
+    // length or the force-change flag updated when the command ends up failing.
     if let Some(min_pin_length_rp_ids) = min_pin_length_rp_ids {
         storage::set_min_pin_length_rp_ids(env, min_pin_length_rp_ids)?;
     }
+    if force_change_pin {
+        env.persist().force_pin_change()?;
+    }
+    if env.persist().has_force_pin_change()? {
+        client_pin.reset_pin_uv_auth_token(env);
+    }
+    storage::set_min_pin_length(env, new_min_pin_length)?;
     Ok(ResponseData::AuthenticatorConfig)
 }
 
@@ -100,7 +107,7 @@ pub fn process_config<E: Env>(
 
     let enforce_uv =
         !matches!(sub_command, ConfigSubCommand::ToggleAlwaysUv) && storage::has_always_uv(env)?;
-    if env.persist().pin_hash()?.is_some() || enforce_uv {
+    if storage::has_user_verification(env)? || enforce_uv {
         let pin_uv_auth_param =
             pin_uv_auth_param.ok_or(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED)?;
         let pin_uv_auth_protocol =
@@ -112,6 +119,7 @@ pub fn process_config<E: Env>(
             super::cbor_write(sub_command_params.into(), &mut config_data)?;
         }
         client_pin.verify_pin_uv_auth_token(
+            env,
             &config_data,
             &pin_uv_auth_param,
             pin_uv_auth_protocol,
@@ -124,7 +132,7 @@ pub fn process_config<E: Env>(
         ConfigSubCommand::ToggleAlwaysUv => process_toggle_always_uv(env),
         ConfigSubCommand::SetMinPinLength => {
             if let Some(ConfigSubCommandParams::SetMinPinLength(params)) = sub_command_params {
-                process_set_min_pin_length(env, params)
+                process_set_min_pin_length(env, client_pin, params)
             } else {
                 Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)
             }
@@ -212,6 +220,34 @@ mod test {
             assert_eq!(config_response, Ok(ResponseData::AuthenticatorConfig));
             assert!(!storage::has_always_uv(&mut env).unwrap());
         }
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_toggle_always_uv_with_uv_method_without_token() {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x55; 32];
+        let mut client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            PinUvAuthProtocol::V1,
+        );
+        env.create_fingerprint().unwrap();
+
+        let config_params = AuthenticatorConfigParameters {
+            sub_command: ConfigSubCommand::ToggleAlwaysUv,
+            sub_command_params: None,
+            pin_uv_auth_param: None,
+            pin_uv_auth_protocol: None,
+        };
+        let config_response = process_config(&mut env, &mut client_pin, config_params);
+        assert_eq!(
+            config_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED)
+        );
+        assert!(!storage::has_always_uv(&mut env).unwrap());
     }
 
     fn test_helper_process_toggle_always_uv_with_pin(pin_uv_auth_protocol: PinUvAuthProtocol) {
@@ -333,6 +369,32 @@ mod test {
             Err(Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION)
         );
         assert_eq!(storage::min_pin_length(&mut env), Ok(min_pin_length));
+    }
+
+    #[test]
+    fn test_process_set_min_pin_length_rp_ids_failure_keeps_state() {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x55; 32];
+        let mut client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            PinUvAuthProtocol::V1,
+        );
+
+        // The serialized list is bigger than what a persistent store value can
+        // hold, so writing the RP IDs fails after the parameters were parsed.
+        let oversized_rp_ids = Some(vec!["r".repeat(500), "s".repeat(500), "t".repeat(500)]);
+        let config_params = create_min_pin_config_params(6, oversized_rp_ids);
+        let config_response = process_config(&mut env, &mut client_pin, config_params);
+        assert!(config_response.is_err());
+
+        // The minimum PIN length is not updated by the failed command.
+        assert_eq!(
+            storage::min_pin_length(&mut env),
+            Ok(env.customization().default_min_pin_length())
+        );
     }
 
     #[test]
@@ -469,6 +531,7 @@ mod test {
         assert_eq!(config_response, Ok(ResponseData::AuthenticatorConfig));
         assert_eq!(storage::min_pin_length(&mut env), Ok(min_pin_length));
         assert_eq!(env.persist().has_force_pin_change(), Ok(true));
+        assert!(!client_pin.has_token(&mut env));
     }
 
     #[test]
@@ -504,6 +567,7 @@ mod test {
         let config_response = process_config(&mut env, &mut client_pin, config_params);
         assert_eq!(config_response, Ok(ResponseData::AuthenticatorConfig));
         assert_eq!(env.persist().has_force_pin_change(), Ok(true));
+        assert!(!client_pin.has_token(&mut env));
     }
 
     #[test]

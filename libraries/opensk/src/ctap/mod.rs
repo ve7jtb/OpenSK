@@ -40,7 +40,7 @@ mod u2f_up;
 pub mod vendor_hid;
 
 pub use self::client_pin::PIN_AUTH_LENGTH;
-use self::client_pin::{ClientPin, PinPermission};
+use self::client_pin::{ClientPin, PinPermission, check_pin_uv_auth_protocol};
 use self::command::{
     AuthenticatorGetAssertionParameters, AuthenticatorMakeCredentialParameters, Command,
 };
@@ -70,8 +70,6 @@ use self::u2f_up::U2fUserPresenceState;
 use crate::api::clock::Clock;
 use crate::api::connection::{HidConnection, RecvStatus, UsbEndpoint};
 use crate::api::crypto::HASH_SIZE;
-#[cfg(test)]
-use crate::api::crypto::ec_signing::{EcSecretKey, EcSignature};
 use crate::api::crypto::hkdf256::Hkdf256;
 use crate::api::crypto::sha256::Sha256;
 use crate::api::customization::Customization;
@@ -82,8 +80,6 @@ use crate::api::persist::{Attestation, AttestationId, Persist};
 use crate::api::private_key::PrivateKey;
 use crate::api::rng::Rng;
 use crate::api::user_presence::{UserPresence, UserPresenceError};
-#[cfg(test)]
-use crate::env::EcdsaSk;
 use crate::env::{Env, Hkdf, Sha};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
@@ -416,6 +412,7 @@ fn truncate_to_char_boundary(s: &str, mut max: usize) -> &str {
 fn map_uv_block_error(result: CtapResult<()>) -> CtapResult<()> {
     result.map_err(|e| match e {
         Ctap2StatusCode::CTAP2_ERR_UV_BLOCKED => Ctap2StatusCode::CTAP2_ERR_PIN_BLOCKED,
+        Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED => Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION,
         other => other,
     })
 }
@@ -966,6 +963,9 @@ impl<E: Env> CtapState<E> {
             }
             pin_uv_auth_protocol.ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
         }
+        if let Some(pin_uv_auth_protocol) = pin_uv_auth_protocol {
+            check_pin_uv_auth_protocol(env, pin_uv_auth_protocol)?;
+        }
         Ok(())
     }
 
@@ -1039,11 +1039,13 @@ impl<E: Env> CtapState<E> {
         let has_pin_uv_auth_param = pin_uv_auth_param.is_some();
         let mut flags = match pin_uv_auth_param {
             Some(pin_uv_auth_param) => {
-                // This case is not mentioned in CTAP2.1, so we keep 2.0 logic.
-                if env.persist().pin_hash()?.is_none() {
+                // CTAP2.1 only verifies pinUvAuthParam if the authenticator is protected by
+                // some form of user verification. Without one, keep the CTAP2.0 error.
+                if !storage::has_user_verification(env)? {
                     return Err(Ctap2StatusCode::CTAP2_ERR_PIN_NOT_SET);
                 }
                 self.client_pin.verify_pin_uv_auth_token(
+                    env,
                     &client_data_hash,
                     &pin_uv_auth_param,
                     pin_uv_auth_protocol.ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?,
@@ -1069,8 +1071,10 @@ impl<E: Env> CtapState<E> {
                     if storage::has_always_uv(env)? {
                         return Err(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED);
                     }
-                    // Corresponds to makeCredUvNotRqd set to true.
-                    if options.rk && env.persist().pin_hash()?.is_some() {
+                    // Corresponds to makeCredUvNotRqd set to true: only discoverable
+                    // credentials need user verification, if the authenticator is protected
+                    // by some form of user verification.
+                    if options.rk && storage::has_user_verification(env)? {
                         return Err(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED);
                     }
                     0x00
@@ -1085,6 +1089,9 @@ impl<E: Env> CtapState<E> {
         let rp_id_hash = Sha::<E>::digest(rp_id.as_bytes());
         if let Some(exclude_list) = exclude_list {
             for cred_desc in exclude_list {
+                if cred_desc.key_type != PublicKeyCredentialType::PublicKey {
+                    continue;
+                }
                 if filter_listed_resident_credential(
                     storage::find_credential(env, &rp_id, &cred_desc.key_id)?,
                     has_uv,
@@ -1099,7 +1106,12 @@ impl<E: Env> CtapState<E> {
                 {
                     // Perform this check, so bad actors can't brute force exclude_list
                     // without user interaction.
-                    let _ = check_user_presence(env, channel);
+                    if !self.has_valid_up(has_pin_uv_auth_param, options.uv) {
+                        match check_user_presence(env, channel) {
+                            Ok(()) | Err(Ctap2StatusCode::CTAP2_ERR_USER_ACTION_TIMEOUT) => {}
+                            Err(status) => return Err(status),
+                        }
+                    }
                     return Err(Ctap2StatusCode::CTAP2_ERR_CREDENTIAL_EXCLUDED);
                 }
             }
@@ -1156,7 +1168,10 @@ impl<E: Env> CtapState<E> {
         };
         let large_blob_key = match (options.rk, extensions.large_blob_key) {
             (true, Some(true)) => Some(env.rng().gen_uniform_u8x32().to_vec()),
-            _ => None,
+            (false, Some(true)) | (_, Some(false)) => {
+                return Err(Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION);
+            }
+            (_, None) => None,
         };
 
         // We decide on the algorithm early, but delay key creation since it takes time.
@@ -1688,6 +1703,9 @@ impl<E: Env> CtapState<E> {
         has_uv: bool,
     ) -> CtapResult<Option<PublicKeyCredentialSource>> {
         for allowed_credential in allow_list {
+            if allowed_credential.key_type != PublicKeyCredentialType::PublicKey {
+                continue;
+            }
             let credential = filter_listed_resident_credential(
                 storage::find_credential(env, rp_id, &allowed_credential.key_id)?,
                 has_uv,
@@ -1733,11 +1751,13 @@ impl<E: Env> CtapState<E> {
         let has_pin_uv_auth_param = pin_uv_auth_param.is_some();
         let mut flags = match pin_uv_auth_param {
             Some(pin_uv_auth_param) => {
-                // This case is not mentioned in CTAP2.1, so we keep 2.0 logic.
-                if env.persist().pin_hash()?.is_none() {
+                // CTAP2.1 only verifies pinUvAuthParam if the authenticator is protected by
+                // some form of user verification. Without one, keep the CTAP2.0 error.
+                if !storage::has_user_verification(env)? {
                     return Err(Ctap2StatusCode::CTAP2_ERR_PIN_NOT_SET);
                 }
                 self.client_pin.verify_pin_uv_auth_token(
+                    env,
                     &client_data_hash,
                     &pin_uv_auth_param,
                     pin_uv_auth_protocol.ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?,
@@ -1816,8 +1836,10 @@ impl<E: Env> CtapState<E> {
         let credential = credential.ok_or(Ctap2StatusCode::CTAP2_ERR_NO_CREDENTIALS)?;
 
         // This check comes before CTAP2_ERR_NO_CREDENTIALS in CTAP 2.0.
-        if options.up && !self.has_valid_up(has_pin_uv_auth_param, options.uv) {
-            check_user_presence(env, channel)?;
+        if options.up {
+            if !self.has_valid_up(has_pin_uv_auth_param, options.uv) {
+                check_user_presence(env, channel)?;
+            }
             self.client_pin.clear_token_flags();
         }
 
@@ -2289,7 +2311,7 @@ mod test {
             0x11 => env.customization().preferred_platform_uv_attempts() as u64,
             0x12 => 0x02,
             0x14 => storage::remaining_credentials(&mut env).unwrap() as u64,
-            0x16 => cbor_array!["packed", "none"],
+            0x16 => cbor_array!["packed"],
             0x19 => enc_id,
             0x1E => enc_state,
             #[cfg(feature = "config_command")]
@@ -2538,7 +2560,7 @@ mod test {
             create_make_credential_parameters_with_exclude_list(&excluded_credential_id);
         let excluded_credential_source = PublicKeyCredentialSource {
             key_type: PublicKeyCredentialType::PublicKey,
-            credential_id: excluded_credential_id,
+            credential_id: excluded_credential_id.clone(),
             wrapped_private_key,
             rp_id: String::from("example.com"),
             user_handle: vec![],
@@ -2553,6 +2575,62 @@ mod test {
         };
         assert!(storage::store_credential(&mut env, excluded_credential_source).is_ok());
 
+        let make_credential_response = ctap_state.process_make_credential(
+            &mut env,
+            make_credential_params.clone(),
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            make_credential_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_CREDENTIAL_EXCLUDED)
+        );
+
+        // Timeout waiting for user presence still returns CTAP2_ERR_CREDENTIAL_EXCLUDED.
+        let clock = env.clock().clone();
+        env.user_presence().set(move || {
+            clock.advance(100);
+            Err(UserPresenceError::Timeout)
+        });
+        let make_credential_response = ctap_state.process_make_credential(
+            &mut env,
+            make_credential_params.clone(),
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            make_credential_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_CREDENTIAL_EXCLUDED)
+        );
+
+        // Cancellation while waiting for user presence propagates CTAP2_ERR_KEEPALIVE_CANCEL.
+        env.user_presence().set(|| Err(UserPresenceError::Canceled));
+        let make_credential_response = ctap_state.process_make_credential(
+            &mut env,
+            make_credential_params.clone(),
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            make_credential_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_KEEPALIVE_CANCEL)
+        );
+
+        // When pinUvAuthToken already has userPresent = true, excludeList does not wait for UP.
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x88; 32];
+        let pin_uv_auth_protocol = PinUvAuthProtocol::V2;
+        ctap_state.client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            pin_uv_auth_protocol,
+        );
+        env.persist().set_pin(&[0u8; 16], 4).unwrap();
+        let mut make_credential_params = make_credential_params;
+        make_credential_params.pin_uv_auth_param = Some(authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &make_credential_params.client_data_hash,
+            pin_uv_auth_protocol,
+        ));
+        make_credential_params.pin_uv_auth_protocol = Some(pin_uv_auth_protocol);
         let make_credential_response =
             ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL);
         assert_eq!(
@@ -2826,6 +2904,12 @@ mod test {
         };
         let mut make_credential_params = create_minimal_make_credential_parameters();
         make_credential_params.extensions = extensions;
+        let mut non_rk_params = make_credential_params.clone();
+        non_rk_params.options.rk = false;
+        assert_eq!(
+            ctap_state.process_make_credential(&mut env, non_rk_params, DUMMY_CHANNEL),
+            Err(Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION)
+        );
         let make_credential_response =
             ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL);
         let large_blob_key = match make_credential_response.unwrap() {
@@ -2922,6 +3006,22 @@ mod test {
         let mut env = TestEnv::default();
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
         env.persist().set_pin(&[0x88; 16], 4).unwrap();
+
+        let make_credential_params = create_minimal_make_credential_parameters();
+        let make_credential_response =
+            ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL);
+        assert_eq!(
+            make_credential_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_resident_process_make_credential_with_uv_method_without_pin() {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        env.create_fingerprint().unwrap();
 
         let make_credential_params = create_minimal_make_credential_parameters();
         let make_credential_response =
@@ -3273,6 +3373,131 @@ mod test {
         );
     }
 
+    #[cfg(feature = "fingerprint")]
+    fn test_helper_process_make_credential_with_uv_token_without_pin(
+        pin_uv_auth_protocol: PinUvAuthProtocol,
+    ) {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x91; PIN_TOKEN_LENGTH];
+        let client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            pin_uv_auth_protocol,
+        );
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        ctap_state.client_pin = client_pin;
+        // Built-in UV is enrolled, but no PIN is set: the token came from
+        // getPinUvAuthTokenUsingUvWithPermissions.
+        env.create_fingerprint().unwrap();
+        assert!(env.persist().pin_hash().unwrap().is_none());
+
+        let client_data_hash = [0xCD];
+        let pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &client_data_hash,
+            pin_uv_auth_protocol,
+        );
+        let mut make_credential_params = create_minimal_make_credential_parameters();
+        make_credential_params.pin_uv_auth_param = Some(pin_uv_auth_param);
+        make_credential_params.pin_uv_auth_protocol = Some(pin_uv_auth_protocol);
+        let make_credential_response =
+            ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL);
+
+        check_make_response(&mut env, &make_credential_response, 0x45, 0x20, &[]);
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_make_credential_with_uv_token_without_pin_v1() {
+        test_helper_process_make_credential_with_uv_token_without_pin(PinUvAuthProtocol::V1);
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_make_credential_with_uv_token_without_pin_v2() {
+        test_helper_process_make_credential_with_uv_token_without_pin(PinUvAuthProtocol::V2);
+    }
+
+    #[cfg(feature = "fingerprint")]
+    fn test_helper_process_get_assertion_with_uv_token_without_pin(
+        pin_uv_auth_protocol: PinUvAuthProtocol,
+    ) {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x91; PIN_TOKEN_LENGTH];
+        let client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            pin_uv_auth_protocol,
+        );
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        let make_credential_params = create_minimal_make_credential_parameters();
+        assert!(
+            ctap_state
+                .process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL)
+                .is_ok()
+        );
+
+        ctap_state.client_pin = client_pin;
+        env.create_fingerprint().unwrap();
+        assert!(env.persist().pin_hash().unwrap().is_none());
+
+        let client_data_hash = vec![0xCD];
+        let pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &client_data_hash,
+            pin_uv_auth_protocol,
+        );
+        let get_assertion_params = AuthenticatorGetAssertionParameters {
+            rp_id: String::from("example.com"),
+            client_data_hash,
+            allow_list: None,
+            extensions: GetAssertionExtensions::default(),
+            options: GetAssertionOptions {
+                up: true,
+                uv: false,
+            },
+            pin_uv_auth_param: Some(pin_uv_auth_param),
+            pin_uv_auth_protocol: Some(pin_uv_auth_protocol),
+        };
+        let get_assertion_response =
+            ctap_state.process_get_assertion(&mut env, get_assertion_params, DUMMY_CHANNEL);
+        assert!(get_assertion_response.is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_get_assertion_with_uv_token_without_pin_v1() {
+        test_helper_process_get_assertion_with_uv_token_without_pin(PinUvAuthProtocol::V1);
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_get_assertion_with_uv_token_without_pin_v2() {
+        test_helper_process_get_assertion_with_uv_token_without_pin(PinUvAuthProtocol::V2);
+    }
+
+    #[test]
+    fn test_process_make_credential_with_token_without_uv_method() {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        let mut make_credential_params = create_minimal_make_credential_parameters();
+        make_credential_params.pin_uv_auth_param = Some(vec![0xA4; 16]);
+        make_credential_params.pin_uv_auth_protocol = Some(PinUvAuthProtocol::V2);
+        let make_credential_response =
+            ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL);
+        assert_eq!(
+            make_credential_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_NOT_SET)
+        );
+    }
+
     #[test]
     #[cfg(feature = "fingerprint")]
     fn test_process_get_assertion_up_through_fingerprint() {
@@ -3317,6 +3542,73 @@ mod test {
     }
 
     #[test]
+    fn test_process_get_assertion_cached_up() {
+        let mut env = TestEnv::default();
+        let key_agreement_key = EcdhSk::<TestEnv>::random(env.rng());
+        let pin_uv_auth_token = [0x88; 32];
+        let pin_uv_auth_protocol = PinUvAuthProtocol::V2;
+        let client_pin = ClientPin::<TestEnv>::new_test(
+            &mut env,
+            key_agreement_key,
+            pin_uv_auth_token,
+            pin_uv_auth_protocol,
+        );
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        let make_credential_params = create_minimal_make_credential_parameters();
+        assert!(
+            ctap_state
+                .process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL)
+                .is_ok()
+        );
+        ctap_state.client_pin = client_pin;
+        env.persist().set_pin(&[0u8; 16], 4).unwrap();
+
+        env.user_presence().set(|| Err(UserPresenceError::Canceled));
+        let client_data_hash = vec![0xCD];
+        let pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &pin_uv_auth_token,
+            &client_data_hash,
+            pin_uv_auth_protocol,
+        );
+        let make_get_assertion_params = || AuthenticatorGetAssertionParameters {
+            rp_id: String::from("example.com"),
+            client_data_hash: client_data_hash.clone(),
+            allow_list: None,
+            extensions: GetAssertionExtensions::default(),
+            options: GetAssertionOptions {
+                up: true,
+                uv: false,
+            },
+            pin_uv_auth_param: Some(pin_uv_auth_param.clone()),
+            pin_uv_auth_protocol: Some(pin_uv_auth_protocol),
+        };
+        let get_assertion_response =
+            ctap_state.process_get_assertion(&mut env, make_get_assertion_params(), DUMMY_CHANNEL);
+        let expected_user = PublicKeyCredentialUserEntity {
+            user_id: vec![0x1D],
+            user_name: None,
+            user_display_name: None,
+            user_icon: None,
+        };
+        let signature_counter = env.persist().global_signature_counter().unwrap();
+        check_assertion_response_with_user(
+            get_assertion_response,
+            Some(expected_user),
+            0x05,
+            signature_counter,
+            None,
+            &[],
+        );
+
+        let get_assertion_response =
+            ctap_state.process_get_assertion(&mut env, make_get_assertion_params(), DUMMY_CHANNEL);
+        assert_eq!(
+            get_assertion_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
+        );
+    }
+
+    #[test]
     #[cfg(not(feature = "fingerprint"))]
     fn test_process_get_assertion_no_uv_from_fingerprint() {
         let mut env = TestEnv::default();
@@ -3344,6 +3636,57 @@ mod test {
         assert_eq!(
             get_assertion_response,
             Err(Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION)
+        );
+    }
+
+    #[test]
+    fn test_unknown_credential_descriptor_type_ignored() {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        let excluded_credential_id = vec![0x01, 0x23, 0x45, 0x67];
+        let excluded_credential_source = PublicKeyCredentialSource {
+            key_type: PublicKeyCredentialType::PublicKey,
+            credential_id: excluded_credential_id.clone(),
+            wrapped_private_key: PrivateKey::new_ecdsa(&mut env).to_cbor(),
+            rp_id: String::from("example.com"),
+            user_handle: vec![0x01],
+            user_display_name: None,
+            cred_protect_policy: None,
+            creation_order: 0,
+            user_name: None,
+            user_icon: None,
+            cred_blob: None,
+            large_blob_key: None,
+            third_party_payment: false,
+        };
+        storage::store_credential(&mut env, excluded_credential_source).unwrap();
+
+        let unknown_descriptor = PublicKeyCredentialDescriptor {
+            key_type: PublicKeyCredentialType::Unknown,
+            key_id: excluded_credential_id,
+            transports: None,
+        };
+        let mut make_credential_params = create_minimal_make_credential_parameters();
+        make_credential_params.exclude_list = Some(vec![unknown_descriptor.clone()]);
+        assert!(
+            ctap_state
+                .process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL)
+                .is_ok()
+        );
+
+        let get_assertion_params = AuthenticatorGetAssertionParameters {
+            rp_id: String::from("example.com"),
+            client_data_hash: vec![0xCD],
+            allow_list: Some(vec![unknown_descriptor]),
+            extensions: GetAssertionExtensions::default(),
+            options: GetAssertionOptions::default(),
+            pin_uv_auth_param: None,
+            pin_uv_auth_protocol: None,
+        };
+        assert_eq!(
+            ctap_state.process_get_assertion(&mut env, get_assertion_params, DUMMY_CHANNEL),
+            Err(Ctap2StatusCode::CTAP2_ERR_NO_CREDENTIALS)
         );
     }
 
@@ -4583,6 +4926,11 @@ mod test {
             ctap_state.process_parsed_command(&mut env, Command::AuthenticatorReset, DUMMY_CHANNEL);
         assert_eq!(response, Ok(ResponseData::AuthenticatorReset));
         assert_eq!(env.persist().template_infos(), Ok(vec![]));
+        assert_eq!(
+            perform_built_in_uv(&mut env, DUMMY_CHANNEL, false),
+            Err(Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED)
+        );
+        env.persist().store_template_id(vec![0x00]).unwrap();
         assert_eq!(
             perform_built_in_uv(&mut env, DUMMY_CHANNEL, false),
             Err(Ctap2StatusCode::CTAP2_ERR_UV_INVALID)

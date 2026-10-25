@@ -356,6 +356,7 @@ impl Point {
     };
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn basepoint() -> Self {
         Self {
             x: BASE_COMB_TABLE[1].0,
