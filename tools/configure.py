@@ -778,6 +778,8 @@ def main(args):
             "x5c": ent_cert_der,
             "mtcCert": ent_mtc_cert_map,
         }
+        if not args.mtc_full_entry:
+            ent_provisioned["keyRef"] = True
         ent_cert_or_mtc_bytes = cbor.encode(ent_provisioned)
         info(
             f"Built Enterprise dual-format descriptor (fmt='mtc' + per-device x5c={len(ent_cert_der)}B, "

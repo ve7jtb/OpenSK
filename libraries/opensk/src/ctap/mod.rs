@@ -1453,7 +1453,12 @@ impl<E: Env> CtapState<E> {
                             None,
                         )
                     } else {
-                        let wire_mtc_cert = if !ep_att && mtc_att.key_ref {
+                        let explicit_keyref_pref = attestation_formats_preference
+                            .as_ref()
+                            .is_some_and(|prefs| {
+                                prefs.iter().any(|p| p == mtc::MTC_KEYREF_FORMAT_STR)
+                            });
+                        let wire_mtc_cert = if mtc_att.key_ref || explicit_keyref_pref {
                             mtc_att.cert.to_key_ref()
                         } else {
                             mtc_att.cert
@@ -5914,7 +5919,7 @@ mod test {
             .unwrap();
 
         // 2. Provision Key 2: Enterprise Single-Device Key (AttestationId::Enterprise)
-        //    with BOTH Enterprise mtcCert (`key_ref: false`, full `mtcEntryDesc` with MtcProof.extensions = "123456")
+        //    with BOTH Enterprise mtcCert (`key_ref: true` -> proof-less `mtcKeyRef` on wire, full MtcProof in flash)
         //    AND Per-Enterprise-Batch-Key X.509 DER certificate (x5c).
         let ent_att_key = PrivateKey::<TestEnv>::new(&mut env, SignatureAlgorithm::MlDsa44);
         let mut ent_sk_bytes = Vec::new();
@@ -5941,13 +5946,13 @@ mod test {
             x5c: Some(ent_x509_der.clone()),
             classical_key: None,
             classical_x5c: None,
-            key_ref: false,
+            key_ref: true,
             cert: MtcCertDescriptor {
                 ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x02],
                 serial: ent_serial,
                 mtc_proof: ent_proof_tls.clone(),
                 not_before: 1_700_000_000,
-                not_after: 1_800_000_000,
+                not_after: MTC_NON_EXPIRING_NOT_AFTER,
                 firmware_version: Some(0),
             },
         };
@@ -6029,8 +6034,8 @@ mod test {
         }
 
         // Case C: Enterprise MakeCredential (0x0A = 1) with "mtc" first in 0x0B and "mtc-debug": true ->
-        //         returns fmt="mtc" (with attStmt.pubKey omitted), full 17-hash `mtcEntryDesc`, and signed
-        //         7-field "mtc-debug" extension (including `deviceSerial: "123456"` and `rootHash`).
+        //         returns fmt="mtc" (with attStmt.pubKey omitted), compact 2-field `mtcKeyRef` (`{ caId, serial }`),
+        //         and signed 7-field "mtc-debug" extension (including `deviceSerial: "123456"` and `rootHash`).
         let mut ent_mtc_params = create_minimal_make_credential_parameters();
         ent_mtc_params.enterprise_attestation = Some(1);
         ent_mtc_params.extensions.mtc_debug = true;
@@ -6046,9 +6051,15 @@ mod test {
                 assert!(r.att_stmt.x5c.is_none());
                 assert!(r.att_stmt.pub_key.is_none());
                 let cert = r.att_stmt.mtc_cert.clone().unwrap();
-                assert!(!cert.is_key_ref());
+                assert!(cert.is_key_ref());
                 assert_eq!(cert.serial, ent_serial);
-                assert_eq!(cert.mtc_proof, ent_proof_tls);
+                assert_eq!(
+                    cbor::Value::from(cert.clone()),
+                    cbor_map_options! {
+                        "caId" => vec![0x83u8, 0x99, 0x3f, 0x01, 0x02],
+                        "serial" => ent_serial,
+                    }
+                );
                 // ED_FLAG (0x80) must be set on authData flags because "mtc-debug" was requested!
                 assert_ne!(r.auth_data[32] & ED_FLAG, 0);
                 let mut expected_ext_bytes = Vec::new();
@@ -6057,7 +6068,7 @@ mod test {
                         "mtc-debug" => cbor_map_options! {
                             "pubKey" => ent_pk_bytes.clone(),
                             "mtcProof" => ent_proof_tls.clone(),
-                            "notAfter" => 1_800_000_000u64,
+                            "notAfter" => MTC_NON_EXPIRING_NOT_AFTER,
                             "rootHash" => expected_ent_root_hash.to_vec(),
                             "notBefore" => 1_700_000_000u64,
                             "deviceSerial" => "123456",
