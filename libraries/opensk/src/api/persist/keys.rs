@@ -16,7 +16,7 @@
 ///
 /// Note that persistent is overloaded: Here, we mean values that survive a Reset. Outside, of this
 /// file, we mean values that survive reboot.
-pub const NUM_PERSISTENT_KEYS: usize = 20;
+pub const NUM_PERSISTENT_KEYS: usize = 40;
 
 /// Defines a key given its name and value or range of values.
 macro_rules! make_key {
@@ -64,17 +64,32 @@ make_partition! {
 
     // WARNING: Keys should not be deleted but prefixed with `_` to avoid accidentally reusing them.
 
-    /// Private key used during attestation.
+    /// Private key used during batch attestation.
     ATTESTATION_PRIVATE_KEY = 1;
 
-    /// Certificate used during attestation.
+    /// Certificate used during batch attestation.
     ATTESTATION_CERTIFICATE = 2;
 
-    /// Type of attestation used.
+    /// Type of batch attestation used.
     ATTESTATION_ID = 4;
 
     /// Authenticator Attestation Global Unique Identifier.
     AAGUID = 3;
+
+    /// Additional shards for batch attestation certificates larger than 1023 bytes.
+    ATTESTATION_CERTIFICATE_EXTRA_SHARDS = 5..15;
+
+    /// Private key used during enterprise attestation.
+    ENTERPRISE_ATTESTATION_PRIVATE_KEY = 21;
+
+    /// Certificate used during enterprise attestation.
+    ENTERPRISE_ATTESTATION_CERTIFICATE = 22;
+
+    /// Type of enterprise attestation used.
+    ENTERPRISE_ATTESTATION_ID = 23;
+
+    /// Additional shards for enterprise attestation certificates larger than 1023 bytes.
+    ENTERPRISE_ATTESTATION_CERTIFICATE_EXTRA_SHARDS = 24..34;
 
     // This is the persistent key limit:
     // - When adding a (persistent) key above this message, make sure its value is smaller than
@@ -83,7 +98,7 @@ make_partition! {
     //   equal than NUM_PERSISTENT_KEYS.
 
     /// Used to make sure that a Reset command completes once started.
-    RESET_COMPLETION = 20;
+    RESET_COMPLETION = 40;
 
     /// Reserved for future credential-related objects.
     ///
@@ -102,6 +117,15 @@ make_partition! {
     ///
     /// The stored large blob can be too big for one key, so it has to be sharded.
     LARGE_BLOB_SHARDS = 2000..2004;
+
+    /// The persistent pinUvAuthToken (32 bytes) for CTAP 2.3 perCredMgmtRO.
+    PERSISTENT_PIN_UV_AUTH_TOKEN = 2028;
+
+    /// The 16-byte device identifier encrypted in GetInfo encIdentifier (0x19).
+    ENC_IDENTIFIER = 2029;
+
+    /// The 16-byte credential store state encrypted in GetInfo encCredStoreState (0x1E).
+    ENC_CRED_STORE_STATE = 2030;
 
     /// Stored friendly names for enrolled fingerprints.
     #[cfg(feature = "fingerprint")]

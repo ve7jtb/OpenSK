@@ -1,0 +1,42 @@
+# Default FIDO Enterprise Serial Number (settable via gen_enterprise_key.py --serial)
+FIDO_SERIAL_NUMBER = 123456
+
+[ req ]
+distinguished_name = req_distinguished_name
+x509_extensions     = fido_extensions
+prompt              = no
+
+[ req_distinguished_name ]
+CN = Fidont Enterprise Attestation
+O  = John Bradley
+OU = Authenticator Attestation
+C  = CA
+
+[ fido_extensions ]
+# Standard required extensions for a FIDO attestation certificate
+basicConstraints = critical, CA:FALSE
+keyUsage         = critical, digitalSignature
+
+# FIDO2 AAGUID Custom Extension
+# OID: 1.3.6.1.4.1.45724.1.1.4 (id-fido-gen-ce-aaguid)
+1.3.6.1.4.1.45724.1.1.4 = ASN1:FORMAT:HEX,OCT:DEADBEEF000000000000DEADBEEF0000
+
+# FIDO Enterprise Attestation Serial Number Extension (non-critical OCTET STRING)
+# OID: 1.3.6.1.4.1.45724.1.1.2 (id-fido-gen-ce-sernum)
+1.3.6.1.4.1.45724.1.1.2 = ASN1:OCTETSTRING:${FIDO_SERIAL_NUMBER}
+
+[ root_ca_req ]
+distinguished_name = root_ca_dn
+x509_extensions     = root_ca_extensions
+prompt              = no
+
+[ root_ca_dn ]
+CN = Fidont Enterprise Root CA
+O  = John Bradley
+OU = Authenticator Attestation
+C  = CA
+
+[ root_ca_extensions ]
+basicConstraints     = critical, CA:TRUE, pathlen:0
+keyUsage             = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash

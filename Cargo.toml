@@ -1,3 +1,5 @@
+cargo-features = ["panic-immediate-abort"]
+
 [package]
 name = "opensk-wasefire"
 version = "0.1.0"
@@ -44,6 +46,51 @@ config-command = ["opensk/config_command"]
 ctap1 = ["opensk/ctap1"]
 debug = ["opensk/debug_ctap"]
 ed25519 = ["opensk/ed25519", "wasefire/api-crypto-ed25519"]
+ed448 = ["opensk/ed448"]
+es384 = ["opensk/es384"]
+es512 = ["opensk/es512"]
+es256k = ["opensk/es256k"]
+mldsa = ["opensk/mldsa"]
+pq-composite = ["opensk/pq_composite", "ed25519", "ed448", "es384", "mldsa"]
+rs256 = ["opensk/rs256"]
+fndsa = ["opensk/fndsa"]
+no-reset-restrictions = ["opensk/no_reset_restrictions"]
+up-always-true = ["opensk/up_always_true"]
 fingerprint = ["dep:wasefire-common", "opensk/fingerprint", "wasefire/api-fingerprint-matcher"]
+suppress-crypto-bytes = ["opensk/suppress_crypto_bytes"]
 led-1 = []
-test = ["opensk/std", "wasefire/test"]
+test = ["ed25519", "opensk/std", "wasefire/test"]
+
+[patch.crates-io]
+ml-dsa = { path = "libraries/ml-dsa" }
+
+[profile.release.package.ml-dsa]
+opt-level = 3
+
+[profile.release.package.module-lattice]
+opt-level = 3
+
+[profile.release.package.shake]
+opt-level = 3
+
+[profile.release.package.ctutils]
+opt-level = 3
+
+[profile.release.package.hybrid-array]
+opt-level = 3
+
+[profile.release.package.fn-dsa]
+opt-level = 3
+
+[profile.release.package.fn-dsa-comm]
+opt-level = 3
+
+[profile.release.package.fn-dsa-kgen]
+opt-level = 3
+
+[profile.release.package.fn-dsa-sign]
+opt-level = 3
+
+[profile.release.package.fn-dsa-vrfy]
+opt-level = 3
+

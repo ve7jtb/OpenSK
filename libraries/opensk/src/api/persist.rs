@@ -15,24 +15,28 @@
 pub mod keys;
 
 use crate::ctap::PIN_AUTH_LENGTH;
-use crate::ctap::data_formats::{extract_byte_string, extract_map, ok_or_missing};
+use crate::ctap::cbor_write;
+#[cfg(feature = "fingerprint")]
+use crate::ctap::cbor_read;
+use crate::ctap::data_formats::{
+    SignatureAlgorithm, extract_byte_string, extract_map, ok_or_missing,
+};
 #[cfg(feature = "fingerprint")]
 use crate::ctap::fingerprint::TemplateInfo;
 use crate::ctap::secret::Secret;
 use crate::ctap::status_code::{Ctap2StatusCode, CtapResult};
-#[cfg(feature = "fingerprint")]
-use crate::ctap::{cbor_read, cbor_write};
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 #[cfg(feature = "fingerprint")]
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp;
 use core::convert::TryFrom;
 #[cfg(test)]
 use enum_iterator::IntoEnumIterator;
 use sk_cbor as cbor;
-use sk_cbor::destructure_cbor_map;
+use sk_cbor::{cbor_array, cbor_bytes, cbor_int, destructure_cbor_map};
 
 pub const AAGUID_LENGTH: usize = 16;
 
@@ -530,15 +534,102 @@ pub trait Persist {
         Err(Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION)
     }
 
+    fn read_attestation_certificate(&self) -> CtapResult<Option<Vec<u8>>> {
+        self.read_attestation_certificate_for_id(AttestationId::Batch)
+    }
+
+    fn read_attestation_certificate_for_id(
+        &self,
+        id: AttestationId,
+    ) -> CtapResult<Option<Vec<u8>>> {
+        let (cert_key, extra_shards) = match id {
+            AttestationId::Batch => (
+                keys::ATTESTATION_CERTIFICATE,
+                keys::ATTESTATION_CERTIFICATE_EXTRA_SHARDS,
+            ),
+            AttestationId::Enterprise => (
+                keys::ENTERPRISE_ATTESTATION_CERTIFICATE,
+                keys::ENTERPRISE_ATTESTATION_CERTIFICATE_EXTRA_SHARDS,
+            ),
+        };
+        let mut certificate = match self.find(cert_key)? {
+            Some(cert) => cert,
+            None => return Ok(None),
+        };
+        for key in extra_shards {
+            match self.find(key)? {
+                Some(shard) => certificate.extend_from_slice(&shard),
+                None => break,
+            }
+        }
+        Ok(Some(certificate))
+    }
+
+    fn write_attestation_certificate(&mut self, certificate: Option<&[u8]>) -> CtapResult<()> {
+        self.write_attestation_certificate_for_id(AttestationId::Batch, certificate)
+    }
+
+    fn write_attestation_certificate_for_id(
+        &mut self,
+        id: AttestationId,
+        certificate: Option<&[u8]>,
+    ) -> CtapResult<()> {
+        let (cert_key, extra_shards) = match id {
+            AttestationId::Batch => (
+                keys::ATTESTATION_CERTIFICATE,
+                keys::ATTESTATION_CERTIFICATE_EXTRA_SHARDS,
+            ),
+            AttestationId::Enterprise => (
+                keys::ENTERPRISE_ATTESTATION_CERTIFICATE,
+                keys::ENTERPRISE_ATTESTATION_CERTIFICATE_EXTRA_SHARDS,
+            ),
+        };
+        match certificate {
+            None => {
+                self.remove(cert_key)?;
+                for key in extra_shards {
+                    self.remove(key)?;
+                }
+            }
+            Some(certificate) => {
+                let max_len = (1 + extra_shards.len()) * VALUE_LENGTH;
+                if certificate.len() > max_len {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_KEY_STORE_FULL);
+                }
+                let first_len = cmp::min(certificate.len(), VALUE_LENGTH);
+                self.insert(cert_key, &certificate[..first_len])?;
+                let mut offset = first_len;
+                for key in extra_shards {
+                    let cur_len = cmp::min(certificate.len().saturating_sub(offset), VALUE_LENGTH);
+                    let slice = &certificate[offset..][..cur_len];
+                    if slice.is_empty() {
+                        self.remove(key)?;
+                    } else {
+                        self.insert(key, slice)?;
+                    }
+                    offset += cur_len;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn get_attestation(&self, id: AttestationId) -> CtapResult<Option<Attestation>> {
-        let stored_id_bytes = self.find(keys::ATTESTATION_ID)?;
+        let (id_key, priv_key) = match id {
+            AttestationId::Batch => (keys::ATTESTATION_ID, keys::ATTESTATION_PRIVATE_KEY),
+            AttestationId::Enterprise => (
+                keys::ENTERPRISE_ATTESTATION_ID,
+                keys::ENTERPRISE_ATTESTATION_PRIVATE_KEY,
+            ),
+        };
+        let stored_id_bytes = self.find(id_key)?;
         match stored_id_bytes.as_deref() {
             Some([byte]) if AttestationId::try_from(*byte)? == id => (),
             Some([_]) | None => return Ok(None),
             _ => return Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR),
         }
-        let wrapped_private_key = self.find(keys::ATTESTATION_PRIVATE_KEY)?;
-        let certificate = self.find(keys::ATTESTATION_CERTIFICATE)?;
+        let wrapped_private_key = self.find(priv_key)?;
+        let certificate = self.read_attestation_certificate_for_id(id)?;
         let (wrapped_private_key, certificate) = match (wrapped_private_key, certificate) {
             (Some(x), Some(y)) => (x, y),
             (None, None) => return Ok(None),
@@ -555,8 +646,15 @@ pub trait Persist {
         id: AttestationId,
         attestation: Option<&Attestation>,
     ) -> CtapResult<()> {
+        let (id_key, priv_key) = match id {
+            AttestationId::Batch => (keys::ATTESTATION_ID, keys::ATTESTATION_PRIVATE_KEY),
+            AttestationId::Enterprise => (
+                keys::ENTERPRISE_ATTESTATION_ID,
+                keys::ENTERPRISE_ATTESTATION_PRIVATE_KEY,
+            ),
+        };
         // To overwrite, first call with None, then call again, to avoid mistakes.
-        let stored_id_bytes = self.find(keys::ATTESTATION_ID)?;
+        let stored_id_bytes = self.find(id_key)?;
         match (stored_id_bytes.as_deref(), attestation) {
             (None, _) => (),
             (Some([byte]), None) if AttestationId::try_from(*byte)? == id => (),
@@ -567,17 +665,14 @@ pub trait Persist {
         // ID is set last to allow idempotent rewrites.
         match attestation {
             None => {
-                self.remove(keys::ATTESTATION_PRIVATE_KEY)?;
-                self.remove(keys::ATTESTATION_CERTIFICATE)?;
-                self.remove(keys::ATTESTATION_ID)?;
+                self.remove(priv_key)?;
+                self.write_attestation_certificate_for_id(id, None)?;
+                self.remove(id_key)?;
             }
             Some(attestation) => {
-                self.insert(
-                    keys::ATTESTATION_PRIVATE_KEY,
-                    &attestation.wrapped_private_key,
-                )?;
-                self.insert(keys::ATTESTATION_CERTIFICATE, &attestation.certificate)?;
-                self.insert(keys::ATTESTATION_ID, &[id as u8])?;
+                self.insert(priv_key, &attestation.wrapped_private_key)?;
+                self.write_attestation_certificate_for_id(id, Some(&attestation.certificate))?;
+                self.insert(id_key, &[id as u8])?;
             }
         }
         Ok(())
@@ -639,9 +734,8 @@ impl TryFrom<u8> for AttestationId {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attestation {
-    /// ECDSA private key, wrapping is implementation specific.
-    ///
-    /// The wrapping needs to work together with your `ecdsa::SecretKey` implementation.
+    /// Attestation private key: either a CBOR-encoded `[alg, key_bytes]` array (for ML-DSA, EdDSA,
+    /// ES384, ES512, or ES256) or a legacy raw 32-byte ECDSA P-256 key.
     pub wrapped_private_key: Vec<u8>,
     pub certificate: Vec<u8>,
 }
@@ -654,10 +748,26 @@ impl TryFrom<cbor::Value> for Attestation {
             let {
                 0x01 => certificate,
                 0x02 => wrapped_private_key,
+                0x03 => algorithm,
             } = extract_map(cbor_value)?;
         }
         let certificate = extract_byte_string(ok_or_missing(certificate)?)?;
-        let wrapped_private_key = extract_byte_string(ok_or_missing(wrapped_private_key)?)?;
+        let mut wrapped_private_key = extract_byte_string(ok_or_missing(wrapped_private_key)?)?;
+        if let Some(alg_cbor) = algorithm {
+            let signature_alg = SignatureAlgorithm::try_from(alg_cbor)?;
+            if matches!(signature_alg, SignatureAlgorithm::Unknown) {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            let mut encoded_key = Vec::new();
+            cbor_write(
+                cbor_array![
+                    cbor_int!(signature_alg as i64),
+                    cbor_bytes!(wrapped_private_key),
+                ],
+                &mut encoded_key,
+            )?;
+            wrapped_private_key = encoded_key;
+        }
         Ok(Attestation {
             wrapped_private_key,
             certificate,
@@ -835,13 +945,9 @@ mod test {
             persist.get_attestation(AttestationId::Batch),
             Ok(Some(attestation.clone()))
         );
-        // Neither directly overwriting nor deleting the wrong ID works.
+        // Directly overwriting without clearing first returns an error.
         assert_eq!(
             persist.set_attestation(AttestationId::Batch, Some(&attestation)),
-            Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)
-        );
-        assert_eq!(
-            persist.set_attestation(AttestationId::Enterprise, None),
             Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)
         );
     }
@@ -859,21 +965,31 @@ mod test {
             persist.set_attestation(AttestationId::Batch, Some(&attestation1)),
             Ok(())
         );
-        assert_eq!(
-            persist.set_attestation(AttestationId::Enterprise, None),
-            Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)
-        );
-        assert_eq!(persist.set_attestation(AttestationId::Batch, None), Ok(()));
         let attestation2 = Attestation {
             wrapped_private_key: vec![0x66],
             certificate: vec![0xDD],
         };
+        // Enterprise has its own slot and can coexist alongside Batch.
         assert_eq!(
             persist.set_attestation(AttestationId::Enterprise, Some(&attestation2)),
             Ok(())
         );
         assert_eq!(
+            persist.get_attestation(AttestationId::Batch),
+            Ok(Some(attestation1.clone()))
+        );
+        assert_eq!(
             persist.get_attestation(AttestationId::Enterprise),
+            Ok(Some(attestation2.clone()))
+        );
+        // Clearing Batch allows overwriting Batch while Enterprise remains intact.
+        assert_eq!(persist.set_attestation(AttestationId::Batch, None), Ok(()));
+        assert_eq!(
+            persist.set_attestation(AttestationId::Batch, Some(&attestation2)),
+            Ok(())
+        );
+        assert_eq!(
+            persist.get_attestation(AttestationId::Batch),
             Ok(Some(attestation2))
         );
     }
@@ -890,6 +1006,59 @@ mod test {
             certificate: vec![0xCC],
         };
         assert_eq!(returned_attestation, expected_attestation);
+    }
+
+    #[test]
+    #[cfg(feature = "mldsa")]
+    fn test_from_cbor_attestation_with_alg() {
+        let seed = vec![0x42; 32];
+        let cbor_value = cbor_map! {
+            0x01 => vec![0xCC],
+            0x02 => seed.clone(),
+            0x03 => SignatureAlgorithm::MlDsa44 as i64,
+        };
+        let returned_attestation = Attestation::try_from(cbor_value).unwrap();
+        let mut expected_key = Vec::new();
+        cbor_write(
+            cbor_array![
+                cbor_int!(SignatureAlgorithm::MlDsa44 as i64),
+                cbor_bytes!(seed),
+            ],
+            &mut expected_key,
+        )
+        .unwrap();
+        assert_eq!(returned_attestation.wrapped_private_key, expected_key);
+        assert_eq!(returned_attestation.certificate, vec![0xCC]);
+    }
+
+    #[test]
+    fn test_large_attestation_certificate_sharding() {
+        let mut env = TestEnv::default();
+        let persist = env.persist();
+
+        // 4500-byte certificate spanning 5 flash entries (1023 * 4 + 408)
+        let large_cert: Vec<u8> = (0..4500).map(|i| (i % 251) as u8).collect();
+        let attestation = Attestation {
+            wrapped_private_key: vec![0x55; 32],
+            certificate: large_cert,
+        };
+        assert_eq!(
+            persist.set_attestation(AttestationId::Batch, Some(&attestation)),
+            Ok(())
+        );
+        assert_eq!(
+            persist.get_attestation(AttestationId::Batch),
+            Ok(Some(attestation.clone()))
+        );
+        // Survives CTAP reset
+        assert_eq!(persist.reset(), Ok(()));
+        assert_eq!(
+            persist.get_attestation(AttestationId::Batch),
+            Ok(Some(attestation))
+        );
+        // Clearing removes all shards
+        assert_eq!(persist.set_attestation(AttestationId::Batch, None), Ok(()));
+        assert_eq!(persist.get_attestation(AttestationId::Batch), Ok(None));
     }
 
     #[test]

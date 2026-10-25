@@ -44,7 +44,17 @@ impl Persist for WasefireEnv {
     }
 
     fn get_attestation(&self, id: AttestationId) -> CtapResult<Option<Attestation>> {
-        let stored_id_bytes = self.find(persist::keys::ATTESTATION_ID)?;
+        let (id_key, priv_key) = match id {
+            AttestationId::Batch => (
+                persist::keys::ATTESTATION_ID,
+                persist::keys::ATTESTATION_PRIVATE_KEY,
+            ),
+            AttestationId::Enterprise => (
+                persist::keys::ENTERPRISE_ATTESTATION_ID,
+                persist::keys::ENTERPRISE_ATTESTATION_PRIVATE_KEY,
+            ),
+        };
+        let stored_id_bytes = self.find(id_key)?;
         if let Some(bytes) = stored_id_bytes {
             if bytes.len() != 1 {
                 return Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR);
@@ -64,9 +74,10 @@ impl Persist for WasefireEnv {
                 };
                 return Ok(Some(attestation));
             }
+            return Ok(None);
         }
-        let wrapped_private_key = self.find(persist::keys::ATTESTATION_PRIVATE_KEY)?;
-        let certificate = self.find(persist::keys::ATTESTATION_CERTIFICATE)?;
+        let wrapped_private_key = self.find(priv_key)?;
+        let certificate = self.read_attestation_certificate_for_id(id)?;
         let (wrapped_private_key, certificate) = match (wrapped_private_key, certificate) {
             (Some(x), Some(y)) => (x, y),
             (None, None) => return Ok(None),

@@ -236,11 +236,14 @@ mod test {
         assert_eq!(response_packet[4], 0x86);
         let cid = *array_ref!(response_packet, 15, 4);
 
-        // Send Reset, get error.
+        // Send Reset, get error (unless no_reset_restrictions is enabled).
         let reset_packet = assemble_packet(&cid, 0x10, &[0x07]);
         let mut reset_response = ctap.process_hid_packet(&reset_packet, Transport::MainHid);
         let response_packet = reset_response.next().unwrap();
+        #[cfg(not(feature = "no_reset_restrictions"))]
         let status_byte = Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED as u8;
+        #[cfg(feature = "no_reset_restrictions")]
+        let status_byte = Ctap2StatusCode::CTAP2_OK as u8;
         let expected_data = [0x90, 0x00, 0x01, status_byte];
         assert_eq!(response_packet[..4], cid);
         assert_eq!(response_packet[4..8], expected_data);

@@ -1,0 +1,19 @@
+[ req ]
+distinguished_name = req_distinguished_name
+x509_extensions     = fido_extensions
+prompt              = no
+
+[ req_distinguished_name ]
+CN = Fidont Attestation
+O  = John Bradley
+OU = Authenticator Attestation
+C  = CA
+
+[ fido_extensions ]
+# Standard required extensions for a FIDO batch certificate
+basicConstraints = critical, CA:FALSE
+keyUsage         = critical, digitalSignature
+
+# FIDO2 AAGUID Custom Extension
+# OID: 1.3.6.1.4.1.45724.1.1.4 (id-fido-gen-ce-aaguid)
+1.3.6.1.4.1.45724.1.1.4 = ASN1:FORMAT:HEX,OCT:DEADBEEF000000000000DEADBEEF0000

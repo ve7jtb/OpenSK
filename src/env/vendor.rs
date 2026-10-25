@@ -17,7 +17,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 use opensk::api::persist::{AAGUID_LENGTH, Attestation, AttestationId, Persist};
-use opensk::ctap::data_formats::{extract_byte_string, extract_map};
+use opensk::ctap::data_formats::{extract_byte_string, extract_map, extract_unsigned};
 use opensk::ctap::status_code::{Ctap2StatusCode, CtapResult};
 use opensk::ctap::{Channel, cbor_read, cbor_write};
 use opensk::env::Env;
@@ -60,6 +60,8 @@ fn encode_cbor(value: Value) -> Vec<u8> {
 pub struct VendorConfigureParameters {
     pub aaguid: Option<[u8; AAGUID_LENGTH]>,
     pub attestation_material: Option<Attestation>,
+    pub cert_append: Option<Vec<u8>>,
+    pub attestation_id: Option<AttestationId>,
 }
 
 impl TryFrom<Value> for VendorConfigureParameters {
@@ -70,6 +72,8 @@ impl TryFrom<Value> for VendorConfigureParameters {
             let {
                 0x01 => aaguid,
                 0x02 => attestation_material,
+                0x03 => cert_append,
+                0x04 => attestation_id,
             } = extract_map(cbor_value)?;
         }
         let aaguid = aaguid.map(extract_byte_string).transpose()?;
@@ -80,9 +84,24 @@ impl TryFrom<Value> for VendorConfigureParameters {
         let attestation_material = attestation_material
             .map(Attestation::try_from)
             .transpose()?;
+        let cert_append = cert_append.map(extract_byte_string).transpose()?;
+        let attestation_id = match attestation_id {
+            Some(val) => {
+                let id_u64 = extract_unsigned(val)?;
+                let id_u8 = u8::try_from(id_u64)
+                    .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
+                Some(
+                    AttestationId::try_from(id_u8)
+                        .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?,
+                )
+            }
+            None => None,
+        };
         Ok(VendorConfigureParameters {
             aaguid,
             attestation_material,
+            cert_append,
+            attestation_id,
         })
     }
 }
@@ -117,11 +136,9 @@ fn process_vendor_configure(
 ) -> CtapResult<VendorConfigureResponse> {
     opensk::ctap::check_user_presence(env, channel)?;
 
-    let attestation_id = AttestationId::Batch;
-    let has_existing_attestation = env
-        .persist()
-        .find(opensk::api::persist::keys::ATTESTATION_ID)?
-        .is_some();
+    let attestation_id = params.attestation_id.unwrap_or(AttestationId::Batch);
+    let existing_attestation = env.persist().get_attestation(attestation_id)?;
+    let has_existing_attestation = existing_attestation.is_some();
     let has_existing_aaguid = env
         .persist()
         .find(opensk::api::persist::keys::AAGUID)?
@@ -133,17 +150,30 @@ fn process_vendor_configure(
         aaguid_programmed: has_existing_aaguid,
     };
 
-    if let Some(data) = params.attestation_material
-        && !has_existing_attestation
-    {
+    if let Some(data) = params.attestation_material {
+        if has_existing_attestation {
+            env.persist().set_attestation(attestation_id, None)?;
+        }
         env.persist().set_attestation(attestation_id, Some(&data))?;
+        if attestation_id == AttestationId::Enterprise {
+            env.persist().enable_enterprise_attestation()?;
+        }
         response.cert_programmed = true;
         response.pkey_programmed = true;
     }
 
-    if let Some(aaguid_bytes) = params.aaguid
-        && !has_existing_aaguid
-    {
+    if let Some(extra_cert_bytes) = params.cert_append {
+        let mut current = env
+            .persist()
+            .read_attestation_certificate_for_id(attestation_id)?
+            .ok_or(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
+        current.extend_from_slice(&extra_cert_bytes);
+        env.persist()
+            .write_attestation_certificate_for_id(attestation_id, Some(&current))?;
+        response.cert_programmed = true;
+    }
+
+    if let Some(aaguid_bytes) = params.aaguid {
         env.persist().set_aaguid(&aaguid_bytes)?;
         response.aaguid_programmed = true;
     }
@@ -187,6 +217,8 @@ mod test {
                     wrapped_private_key: dummy_pkey.to_vec(),
                     certificate: dummy_cert.to_vec(),
                 }),
+                cert_append: None,
+                attestation_id: None,
             })
         );
     }

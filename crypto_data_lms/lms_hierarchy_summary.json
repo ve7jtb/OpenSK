@@ -1,0 +1,107 @@
+{
+  "aaguid": "deadbeef-0000-0000-0000-deadbeef0000",
+  "lmsParameterSet": "LMS_SHA256_M32_H5 (0x05) + LMOTS_SHA256_N32_W8 (0x04)",
+  "x509Oid": "1.2.840.113549.1.9.16.3.17",
+  "coseAlg": -46,
+  "rootCa": {
+    "subject": "CN=Fidont LMS Root CA, O=John Bradley, OU=Authenticator Attestation, C=CA",
+    "publicKeyBytes": 60,
+    "derLengthBytes": 1737,
+    "nextLeafQ": 5,
+    "maxLeaves": 32,
+    "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/root_ca/lms_root_ca.pem",
+    "stateFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/root_ca/lms_root_ca.state.json"
+  },
+  "intermediates": [
+    {
+      "index": 0,
+      "subject": "CN=Fidont LMS Intermediate CA #0, O=John Bradley, OU=Authenticator Attestation, C=CA",
+      "signedByRootLeafQ": 1,
+      "publicKeyBytes": 60,
+      "derLengthBytes": 1781,
+      "nextLeafQ": 6,
+      "maxLeaves": 32,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_0.pem",
+      "stateFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_0.state.json"
+    },
+    {
+      "index": 1,
+      "subject": "CN=Fidont LMS Intermediate CA #1, O=John Bradley, OU=Authenticator Attestation, C=CA",
+      "signedByRootLeafQ": 2,
+      "publicKeyBytes": 60,
+      "derLengthBytes": 1781,
+      "nextLeafQ": 0,
+      "maxLeaves": 32,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_1.pem",
+      "stateFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_1.state.json"
+    },
+    {
+      "index": 2,
+      "subject": "CN=Fidont LMS Intermediate CA #2, O=John Bradley, OU=Authenticator Attestation, C=CA",
+      "signedByRootLeafQ": 3,
+      "publicKeyBytes": 60,
+      "derLengthBytes": 1781,
+      "nextLeafQ": 0,
+      "maxLeaves": 32,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_2.pem",
+      "stateFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_2.state.json"
+    },
+    {
+      "index": 3,
+      "subject": "CN=Fidont LMS Intermediate CA #3, O=John Bradley, OU=Authenticator Attestation, C=CA",
+      "signedByRootLeafQ": 4,
+      "publicKeyBytes": 60,
+      "derLengthBytes": 1781,
+      "nextLeafQ": 0,
+      "maxLeaves": 32,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_3.pem",
+      "stateFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_lms/intermediates/lms_intermediate_3.state.json"
+    }
+  ],
+  "batchCertificates": {
+    "crypto_data_mldsa44": {
+      "directory": "crypto_data_mldsa44",
+      "subjectAlg": "ML-DSA-44",
+      "coseAlg": -48,
+      "subjectPublicKeyBytes": 1312,
+      "signedByIntermediateIndex": 0,
+      "intermediateLeafQ": 0,
+      "certSerialHex": "0x0300",
+      "derLengthBytes": 3033,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa44/fidont_cert.pem"
+    },
+    "crypto_data_mldsa65": {
+      "directory": "crypto_data_mldsa65",
+      "subjectAlg": "ML-DSA-65",
+      "coseAlg": -49,
+      "subjectPublicKeyBytes": 1952,
+      "signedByIntermediateIndex": 0,
+      "intermediateLeafQ": 1,
+      "certSerialHex": "0x0301",
+      "derLengthBytes": 3673,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa65/fidont_cert.pem"
+    },
+    "crypto_data_mldsa87": {
+      "directory": "crypto_data_mldsa87",
+      "subjectAlg": "ML-DSA-87",
+      "coseAlg": -50,
+      "subjectPublicKeyBytes": 2592,
+      "signedByIntermediateIndex": 0,
+      "intermediateLeafQ": 2,
+      "certSerialHex": "0x0302",
+      "derLengthBytes": 4313,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa87/fidont_cert.pem"
+    },
+    "crypto_data_enterprise": {
+      "directory": "crypto_data_enterprise",
+      "subjectAlg": "ML-DSA-44",
+      "coseAlg": -48,
+      "subjectPublicKeyBytes": 1312,
+      "signedByIntermediateIndex": 0,
+      "intermediateLeafQ": 3,
+      "certSerialHex": "0x0303",
+      "derLengthBytes": 3069,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_enterprise/fidont_cert.pem"
+    }
+  }
+}

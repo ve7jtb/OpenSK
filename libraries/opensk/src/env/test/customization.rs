@@ -54,6 +54,9 @@ impl TestCustomization {
         mode: Option<EnterpriseAttestationMode>,
         rp_id_list: Option<Vec<String>>,
     ) {
+        if mode.is_some() {
+            self.use_batch_attestation = false;
+        }
         self.enterprise_attestation_mode = mode;
         if let Some(rp_id_list) = rp_id_list {
             self.enterprise_rp_id_list = rp_id_list;

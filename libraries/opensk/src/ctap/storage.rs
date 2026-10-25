@@ -14,7 +14,8 @@
 
 use crate::api::customization::Customization;
 use crate::api::key_store::KeyStore;
-use crate::api::persist::{Persist, PersistCredentialIter};
+use crate::api::persist::{Persist, PersistCredentialIter, keys};
+use crate::api::rng::Rng;
 use crate::ctap::data_formats::{
     PublicKeyCredentialSource, PublicKeyCredentialUserEntity, extract_array, extract_text_string,
 };
@@ -22,6 +23,7 @@ use crate::ctap::status_code::{Ctap2StatusCode, CtapResult};
 use crate::env::Env;
 use alloc::string::String;
 use alloc::vec::Vec;
+use arrayref::array_ref;
 use core::convert::TryFrom;
 #[cfg(feature = "config_command")]
 use sk_cbor::cbor_array_vec;
@@ -30,6 +32,65 @@ use sk_cbor::cbor_array_vec;
 pub fn init(env: &mut impl Env) -> CtapResult<()> {
     env.persist().init()?;
     env.key_store().init()?;
+    Ok(())
+}
+
+/// Returns the 32-byte persistentPinUvAuthToken, generating and storing one if absent.
+pub fn persistent_pin_uv_auth_token<E: Env>(env: &mut E) -> CtapResult<[u8; 32]> {
+    match env.persist().find(keys::PERSISTENT_PIN_UV_AUTH_TOKEN)? {
+        Some(value) if value.len() == 32 => Ok(*array_ref![value, 0, 32]),
+        None => {
+            let token = env.rng().gen_uniform_u8x32();
+            env.persist()
+                .insert(keys::PERSISTENT_PIN_UV_AUTH_TOKEN, &token)?;
+            Ok(token)
+        }
+        Some(_) => Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR),
+    }
+}
+
+/// Rotates the 32-byte persistentPinUvAuthToken to a new random value.
+pub fn reset_persistent_pin_uv_auth_token<E: Env>(env: &mut E) -> CtapResult<()> {
+    let token = env.rng().gen_uniform_u8x32();
+    env.persist()
+        .insert(keys::PERSISTENT_PIN_UV_AUTH_TOKEN, &token)
+}
+
+/// Returns the 16-byte device identifier for GetInfo encIdentifier (0x19), generating one if absent.
+pub fn enc_identifier<E: Env>(env: &mut E) -> CtapResult<[u8; 16]> {
+    match env.persist().find(keys::ENC_IDENTIFIER)? {
+        Some(value) if value.len() == 16 => Ok(*array_ref![value, 0, 16]),
+        None => {
+            let random_bytes = env.rng().gen_uniform_u8x32();
+            let id = *array_ref![random_bytes, 0, 16];
+            env.persist().insert(keys::ENC_IDENTIFIER, &id)?;
+            Ok(id)
+        }
+        Some(_) => Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR),
+    }
+}
+
+/// Returns the 16-byte credential store state for GetInfo encCredStoreState (0x1E), generating one if absent.
+pub fn enc_cred_store_state<E: Env>(env: &mut E) -> CtapResult<[u8; 16]> {
+    match env.persist().find(keys::ENC_CRED_STORE_STATE)? {
+        Some(value) if value.len() == 16 => Ok(*array_ref![value, 0, 16]),
+        None => {
+            let random_bytes = env.rng().gen_uniform_u8x32();
+            let state = *array_ref![random_bytes, 0, 16];
+            env.persist().insert(keys::ENC_CRED_STORE_STATE, &state)?;
+            Ok(state)
+        }
+        Some(_) => Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR),
+    }
+}
+
+/// Rotates the 16-byte credential store state if it has already been initialized.
+fn rotate_cred_store_state_if_present<E: Env>(env: &mut E) -> CtapResult<()> {
+    if env.persist().find(keys::ENC_CRED_STORE_STATE)?.is_some() {
+        let random_bytes = env.rng().gen_uniform_u8x32();
+        let state = *array_ref![random_bytes, 0, 16];
+        env.persist().insert(keys::ENC_CRED_STORE_STATE, &state)?;
+    }
     Ok(())
 }
 
@@ -120,6 +181,7 @@ pub fn store_credential<E: Env>(
     };
     let value = serialize_credential(new_credential)?;
     env.persist().write_credential_bytes(key, &value)?;
+    rotate_cred_store_state_if_present(env)?;
     Ok(())
 }
 
@@ -130,7 +192,8 @@ pub fn store_credential<E: Env>(
 /// Returns `CTAP2_ERR_NO_CREDENTIALS` if the credential is not found.
 pub fn delete_credential(env: &mut impl Env, credential_id: &[u8]) -> CtapResult<()> {
     let (key, _) = find_credential_item(env, credential_id)?;
-    env.persist().remove_credential(key)
+    env.persist().remove_credential(key)?;
+    rotate_cred_store_state_if_present(env)
 }
 
 /// Updates a credential's user information.
@@ -148,7 +211,8 @@ pub fn update_credential<E: Env>(
     credential.user_display_name = user.user_display_name;
     credential.user_icon = user.user_icon;
     let value = serialize_credential(credential)?;
-    env.persist().write_credential_bytes(key, &value)
+    env.persist().write_credential_bytes(key, &value)?;
+    rotate_cred_store_state_if_present(env)
 }
 
 /// Returns the number of credentials.
@@ -416,6 +480,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         }
     }
 
@@ -616,6 +681,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert_eq!(found_credential, Some(expected_credential));
     }
@@ -797,6 +863,7 @@ mod test {
             user_icon: Some(String::from("icon")),
             cred_blob: Some(vec![0xCB]),
             large_blob_key: Some(vec![0x1B]),
+            third_party_payment: false,
         };
         let serialized = serialize_credential(credential.clone()).unwrap();
         let reconstructed = deserialize_credential(&serialized).unwrap();

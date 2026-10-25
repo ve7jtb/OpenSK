@@ -18,7 +18,7 @@ use super::data_formats::{ConfigSubCommand, ConfigSubCommandParams, SetMinPinLen
 use super::response::ResponseData;
 use super::status_code::Ctap2StatusCode;
 use crate::api::customization::Customization;
-use crate::api::persist::Persist;
+use crate::api::persist::{AttestationId, Persist};
 use crate::ctap::status_code::CtapResult;
 use crate::ctap::storage;
 use crate::env::Env;
@@ -34,7 +34,12 @@ const MAX_PIN_LENGTH: u8 = (PIN_PADDED_LENGTH - 1) as u8;
 
 /// Processes the subcommand enableEnterpriseAttestation for AuthenticatorConfig.
 fn process_enable_enterprise_attestation(env: &mut impl Env) -> CtapResult<ResponseData> {
-    if env.customization().enterprise_attestation_mode().is_some() {
+    if env.customization().enterprise_attestation_mode().is_some()
+        || env
+            .persist()
+            .get_attestation(AttestationId::Enterprise)?
+            .is_some()
+    {
         storage::enable_enterprise_attestation(env)?;
         Ok(ResponseData::AuthenticatorConfig)
     } else {

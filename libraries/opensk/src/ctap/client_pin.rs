@@ -121,6 +121,7 @@ pub enum PinPermission {
     BioEnrollment = 0x08,
     LargeBlobWrite = 0x10,
     AuthenticatorConfiguration = 0x20,
+    PersistentCredentialManagementReadOnly = 0x40,
 }
 
 pub struct ClientPin<E: Env> {
@@ -303,15 +304,18 @@ impl<E: Env> ClientPin<E> {
         self.verify_pin_hash_enc(env, pin_uv_auth_protocol, &shared_secret, pin_hash_enc)?;
 
         check_and_store_new_pin(env, &shared_secret, new_pin_enc)?;
+        storage::reset_persistent_pin_uv_auth_token(env)?;
         self.pin_protocol_v1.reset_pin_uv_auth_token(env);
         self.pin_protocol_v2.reset_pin_uv_auth_token(env);
+        self.pin_uv_auth_token_state.stop_using_pin_uv_auth_token();
         Ok(())
     }
 
-    fn process_get_pin_token(
+    fn process_get_pin_token_internal(
         &mut self,
         env: &mut E,
         client_pin_params: AuthenticatorClientPinParameters,
+        force_pin_change_error: Ctap2StatusCode,
     ) -> CtapResult<AuthenticatorClientPinResponse> {
         let AuthenticatorClientPinParameters {
             pin_uv_auth_protocol,
@@ -333,7 +337,7 @@ impl<E: Env> ClientPin<E> {
         let shared_secret = self.get_shared_secret(pin_uv_auth_protocol, key_agreement)?;
         self.verify_pin_hash_enc(env, pin_uv_auth_protocol, &shared_secret, pin_hash_enc)?;
         if env.persist().has_force_pin_change()? {
-            return Err(Ctap2StatusCode::CTAP2_ERR_PIN_INVALID);
+            return Err(force_pin_change_error);
         }
 
         self.pin_protocol_v1.reset_pin_uv_auth_token(env);
@@ -356,6 +360,18 @@ impl<E: Env> ClientPin<E> {
         })
     }
 
+    fn process_get_pin_token(
+        &mut self,
+        env: &mut E,
+        client_pin_params: AuthenticatorClientPinParameters,
+    ) -> CtapResult<AuthenticatorClientPinResponse> {
+        self.process_get_pin_token_internal(
+            env,
+            client_pin_params,
+            Ctap2StatusCode::CTAP2_ERR_PIN_INVALID,
+        )
+    }
+
     #[cfg(feature = "fingerprint")]
     fn process_get_pin_uv_auth_token_using_uv_with_permissions(
         &mut self,
@@ -376,9 +392,8 @@ impl<E: Env> ClientPin<E> {
         if permissions == 0 {
             return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
         }
-        // Since credMgmt, uvBioEnroll and largeBlobs are always true in the options,
+        // Since credMgmt, uvBioEnroll, perCredMgmtRO and largeBlobs are always true in the options,
         // we only have to check uvAcfg for step 3.4 in CTAP 2.2.
-        // TODO implement perCredMgmtRO
         #[cfg(not(feature = "config_command"))]
         if permissions & PinPermission::AuthenticatorConfiguration as u8 > 0 {
             return Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION);
@@ -396,7 +411,19 @@ impl<E: Env> ClientPin<E> {
 
         let shared_secret = self.get_shared_secret(pin_uv_auth_protocol, key_agreement)?;
         if env.persist().has_force_pin_change()? {
-            return Err(Ctap2StatusCode::CTAP2_ERR_PIN_INVALID);
+            return Err(Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION);
+        }
+
+        if permissions == PinPermission::PersistentCredentialManagementReadOnly as u8 {
+            let persistent_token = storage::persistent_pin_uv_auth_token(env)?;
+            let pin_uv_auth_token = shared_secret.encrypt(env, &persistent_token)?;
+            return Ok(AuthenticatorClientPinResponse {
+                key_agreement: None,
+                pin_uv_auth_token: Some(pin_uv_auth_token),
+                retries: None,
+                power_cycle_state: None,
+                uv_retries: None,
+            });
         }
 
         self.pin_protocol_v1.reset_pin_uv_auth_token(env);
@@ -462,10 +489,9 @@ impl<E: Env> ClientPin<E> {
         if permissions == 0 {
             return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
         }
-        // Since credMgmt, uvBioEnroll and largeBlobs are always true in the options,
+        // Since credMgmt, uvBioEnroll, perCredMgmtRO and largeBlobs are always true in the options,
         // and noMcGaPermissionsWithClientPin and noMcGaPermissionsWithClientPin are both false,
         // we only have to check uvAcfg for step 3.4 in CTAP 2.2.
-        // TODO implement perCredMgmtRO
         #[cfg(not(feature = "config_command"))]
         if permissions & PinPermission::AuthenticatorConfiguration as u8 > 0 {
             return Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION);
@@ -478,7 +504,39 @@ impl<E: Env> ClientPin<E> {
             return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
         }
 
-        let response = self.process_get_pin_token(env, client_pin_params)?;
+        if permissions == PinPermission::PersistentCredentialManagementReadOnly as u8 {
+            let AuthenticatorClientPinParameters {
+                pin_uv_auth_protocol,
+                key_agreement,
+                pin_hash_enc,
+                ..
+            } = client_pin_params;
+            let key_agreement = ok_or_missing(key_agreement)?;
+            let pin_hash_enc = ok_or_missing(pin_hash_enc)?;
+            if storage::pin_retries(env)? == 0 {
+                return Err(Ctap2StatusCode::CTAP2_ERR_PIN_BLOCKED);
+            }
+            let shared_secret = self.get_shared_secret(pin_uv_auth_protocol, key_agreement)?;
+            self.verify_pin_hash_enc(env, pin_uv_auth_protocol, &shared_secret, pin_hash_enc)?;
+            if env.persist().has_force_pin_change()? {
+                return Err(Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION);
+            }
+            let persistent_token = storage::persistent_pin_uv_auth_token(env)?;
+            let pin_uv_auth_token = shared_secret.encrypt(env, &persistent_token)?;
+            return Ok(AuthenticatorClientPinResponse {
+                key_agreement: None,
+                pin_uv_auth_token: Some(pin_uv_auth_token),
+                retries: None,
+                power_cycle_state: None,
+                uv_retries: None,
+            });
+        }
+
+        let response = self.process_get_pin_token_internal(
+            env,
+            client_pin_params,
+            Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION,
+        )?;
         self.pin_uv_auth_token_state.set_permissions(permissions);
         self.pin_uv_auth_token_state
             .set_permissions_rp_id(permissions_rp_id);
@@ -545,6 +603,23 @@ impl<E: Env> ClientPin<E> {
         verify_pin_uv_auth_token::<E>(
             self.get_pin_protocol(pin_uv_auth_protocol)
                 .get_pin_uv_auth_token(),
+            hmac_contents,
+            pin_uv_auth_param,
+            pin_uv_auth_protocol,
+        )
+    }
+
+    /// Verifies the HMAC against the persistentPinUvAuthToken (perCredMgmtRO).
+    pub fn verify_persistent_pin_uv_auth_token(
+        &self,
+        env: &mut E,
+        hmac_contents: &[u8],
+        pin_uv_auth_param: &[u8],
+        pin_uv_auth_protocol: PinUvAuthProtocol,
+    ) -> CtapResult<()> {
+        let token = storage::persistent_pin_uv_auth_token(env)?;
+        verify_pin_uv_auth_token::<E>(
+            &token,
             hmac_contents,
             pin_uv_auth_param,
             pin_uv_auth_protocol,
@@ -1250,6 +1325,41 @@ mod test {
     }
 
     #[cfg(feature = "fingerprint")]
+    fn test_helper_process_get_pin_uv_auth_token_using_uv_with_permissions_force_pin_change(
+        pin_uv_auth_protocol: PinUvAuthProtocol,
+    ) {
+        let (mut client_pin, params) = create_client_pin_and_parameters(
+            pin_uv_auth_protocol,
+            ClientPinSubCommand::GetPinUvAuthTokenUsingUvWithPermissions,
+        );
+        let mut env = TestEnv::default();
+        set_standard_pin(&mut env);
+        assert!(env.create_fingerprint().is_ok());
+
+        assert_eq!(env.persist().force_pin_change(), Ok(()));
+        assert_eq!(
+            client_pin.process_command(&mut env, params, DUMMY_CHANNEL),
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_get_pin_uv_auth_token_using_uv_with_permissions_force_pin_change_v1() {
+        test_helper_process_get_pin_uv_auth_token_using_uv_with_permissions_force_pin_change(
+            PinUvAuthProtocol::V1,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fingerprint")]
+    fn test_process_get_pin_uv_auth_token_using_uv_with_permissions_force_pin_change_v2() {
+        test_helper_process_get_pin_uv_auth_token_using_uv_with_permissions_force_pin_change(
+            PinUvAuthProtocol::V2,
+        );
+    }
+
+    #[cfg(feature = "fingerprint")]
     fn test_helper_process_get_uv_retries(pin_uv_auth_protocol: PinUvAuthProtocol) {
         let (mut client_pin, params) = create_client_pin_and_parameters(
             pin_uv_auth_protocol,
@@ -1377,7 +1487,7 @@ mod test {
         assert_eq!(env.persist().force_pin_change(), Ok(()));
         assert_eq!(
             client_pin.process_command(&mut env, params, DUMMY_CHANNEL),
-            Err(Ctap2StatusCode::CTAP2_ERR_PIN_INVALID)
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_POLICY_VIOLATION)
         );
     }
 

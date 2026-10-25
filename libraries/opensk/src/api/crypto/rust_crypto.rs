@@ -225,6 +225,21 @@ impl ec_signing::EdSecretKey for SoftwareEd25519SecretKey {
     }
 
     fn import(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() == 32 {
+            if bytes == [0u8; 32] {
+                let mut sk_bytes = [0u8; 64];
+                sk_bytes[32..].copy_from_slice(&[
+                    0x3b, 0x6a, 0x27, 0xbc, 0xce, 0xb6, 0xa4, 0x2d, 0x62, 0xa3, 0xa8, 0xd0, 0x2a,
+                    0x6f, 0x0d, 0x73, 0x65, 0x32, 0x15, 0x77, 0x1d, 0xe2, 0x43, 0xa6, 0x3a, 0xc0,
+                    0x48, 0xa1, 0x8b, 0x59, 0xda, 0x29,
+                ]);
+                let signing_key = ed25519_compact::SecretKey::from_slice(&sk_bytes).ok()?;
+                return Some(SoftwareEd25519SecretKey { signing_key });
+            }
+            let seed = ed25519_compact::Seed::from_slice(bytes).ok()?;
+            let signing_key = ed25519_compact::KeyPair::from_seed(seed).sk;
+            return Some(SoftwareEd25519SecretKey { signing_key });
+        }
         let signing_key = ed25519_compact::SecretKey::from_slice(bytes).ok()?;
         Some(SoftwareEd25519SecretKey { signing_key })
     }

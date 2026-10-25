@@ -40,7 +40,7 @@ fi
 # Ensure we have certificates, keys, etc. so that the tests can run
 source tools/gen_key_materials.sh
 generate_pki N
-if [ ! -f "crypto_data/opensk.key" -o ! -f "crypto_data/opensk_cert.pem" ]
+if [ ! -f "crypto_data/fidont.key" -o ! -f "crypto_data/fidont_cert.pem" ]
 then
   generate_new_batch
 fi

@@ -21,13 +21,26 @@ pub(crate) struct Impl {
 
 impl core::fmt::Write for Impl {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if !wasefire::debug::ENABLED {
+            return Ok(());
+        }
         self.output.push_str(s);
+        while let Some(pos) = self.output.find('\n') {
+            wasefire::debug::println(&self.output[..pos]);
+            self.output.drain(..=pos);
+        }
+        if self.output.len() >= 512 {
+            wasefire::debug::println(&self.output);
+            self.output.clear();
+        }
         Ok(())
     }
 }
 
 impl Drop for Impl {
     fn drop(&mut self) {
-        wasefire::debug!("{}", self.output);
+        if !self.output.is_empty() {
+            wasefire::debug::println(&self.output);
+        }
     }
 }

@@ -326,8 +326,8 @@ pub const DEFAULT_CUSTOMIZATION: CustomizationImpl = CustomizationImpl {
     default_min_pin_length_rp_ids: &[],
     enforce_always_uv: false,
     enterprise_attestation_mode: None,
-    enterprise_rp_id_list: &[],
-    max_msg_size: 7609,
+    enterprise_rp_id_list: &["enterprisetest.certinfra.fidoalliance.org", "example.com"],
+    max_msg_size: 16384,
     max_pin_retries: 8,
     #[cfg(feature = "fingerprint")]
     max_uv_attempts_for_internal_retries: 1,
@@ -335,7 +335,7 @@ pub const DEFAULT_CUSTOMIZATION: CustomizationImpl = CustomizationImpl {
     max_uv_retries: 8,
     #[cfg(feature = "fingerprint")]
     preferred_platform_uv_attempts: 1,
-    use_batch_attestation: false,
+    use_batch_attestation: true,
     use_signature_counter: true,
     max_cred_blob_length: 32,
     max_credential_count_in_list: None,
@@ -449,8 +449,8 @@ pub fn is_valid(customization: &impl Customization) -> bool {
     // - storage.rs: if max_large_blob_array_size() fits the shards
     // - storage/key.rs: if max_supported_resident_keys() fits CREDENTIALS
 
-    // Max message size must be between 1024 and 7609.
-    if customization.max_msg_size() < 1024 || customization.max_msg_size() > 7609 {
+    // Max message size must be between 1024 and 65535.
+    if customization.max_msg_size() < 1024 || customization.max_msg_size() > u16::MAX as usize {
         return false;
     }
 
@@ -473,13 +473,6 @@ pub fn is_valid(customization: &impl Customization) -> bool {
         customization.enterprise_attestation_mode(),
         Some(EnterpriseAttestationMode::VendorFacilitated)
     ) && customization.enterprise_rp_id_list().is_empty()
-    {
-        return false;
-    }
-
-    // enterprise_rp_id_list() should be empty without an enterprise attestation mode.
-    if customization.enterprise_attestation_mode().is_none()
-        && !customization.enterprise_rp_id_list().is_empty()
     {
         return false;
     }

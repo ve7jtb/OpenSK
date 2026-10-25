@@ -15,7 +15,9 @@
 use super::apdu::{Apdu, ApduStatusCode};
 use super::{CtapState, filter_listed_credential};
 use crate::api::crypto::EC_FIELD_SIZE;
-use crate::api::crypto::ec_signing::{EcPublicKey, EcSecretKey, EcSignature};
+#[cfg(test)]
+use crate::api::crypto::ec_signing::EcSignature;
+use crate::api::crypto::ec_signing::{EcPublicKey, EcSecretKey};
 use crate::api::key_store::{CredentialSource, KeyStore};
 use crate::api::persist::{Attestation, AttestationId, Persist};
 use crate::api::private_key::PrivateKey;
@@ -259,6 +261,7 @@ impl Ctap1Command {
             rp_id_hash: application,
             cred_protect_policy: None,
             cred_blob: None,
+            third_party_payment: false,
         };
         let key_handle = env
             .key_store()
@@ -294,11 +297,13 @@ impl Ctap1Command {
         signature_data.extend(key_handle);
         signature_data.extend_from_slice(&user_pk);
 
-        let attestation_key = EcdsaSk::<E>::import(&wrapped_private_key)
+        let attestation_key = PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
             .ok_or(Ctap1StatusCode::SW_INTERNAL_EXCEPTION)?;
-        let signature = attestation_key.sign(&signature_data);
+        let signature = attestation_key
+            .sign_and_encode(&signature_data)
+            .map_err(|_| Ctap1StatusCode::SW_INTERNAL_EXCEPTION)?;
 
-        response.extend(signature.to_der());
+        response.extend(signature);
         Ok(response)
     }
 
@@ -417,6 +422,7 @@ mod test {
             rp_id_hash,
             cred_protect_policy: None,
             cred_blob: None,
+            third_party_payment: false,
         };
         let key_handle = env.key_store().wrap_credential(credential_source).unwrap();
         (key_handle, rp_id_hash)
@@ -750,6 +756,7 @@ mod test {
             rp_id_hash,
             cred_protect_policy: Some(CredentialProtectionPolicy::UserVerificationRequired),
             cred_blob: None,
+            third_party_payment: false,
         };
         let key_handle = env.key_store().wrap_credential(credential_source).unwrap();
         let message =

@@ -27,6 +27,7 @@ pub mod fingerprint;
 pub mod hid;
 mod large_blobs;
 pub mod main_hid;
+pub mod mtc;
 mod pin_protocol;
 pub mod response;
 pub mod secret;
@@ -69,6 +70,7 @@ use self::u2f_up::U2fUserPresenceState;
 use crate::api::clock::Clock;
 use crate::api::connection::{HidConnection, RecvStatus, UsbEndpoint};
 use crate::api::crypto::HASH_SIZE;
+#[cfg(test)]
 use crate::api::crypto::ec_signing::{EcSecretKey, EcSignature};
 use crate::api::crypto::hkdf256::Hkdf256;
 use crate::api::crypto::sha256::Sha256;
@@ -80,7 +82,9 @@ use crate::api::persist::{Attestation, AttestationId, Persist};
 use crate::api::private_key::PrivateKey;
 use crate::api::rng::Rng;
 use crate::api::user_presence::{UserPresence, UserPresenceError};
-use crate::env::{EcdsaSk, Env, Hkdf, Sha};
+#[cfg(test)]
+use crate::env::EcdsaSk;
+use crate::env::{Env, Hkdf, Sha};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -112,6 +116,7 @@ pub const FIDO2_VERSION_STRING: &str = "FIDO_2_0";
 #[cfg(feature = "ctap1")]
 pub const U2F_VERSION_STRING: &str = "U2F_V2";
 pub const FIDO2_1_VERSION_STRING: &str = "FIDO_2_1";
+pub const FIDO2_3_VERSION_STRING: &str = "FIDO_2_3";
 
 // We currently only support one algorithm for signatures: ES256.
 // This algorithm is requested in MakeCredential and advertized in GetInfo.
@@ -120,16 +125,146 @@ pub const ES256_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialPa
     alg: SignatureAlgorithm::Es256,
 };
 
+#[cfg(feature = "es384")]
+pub const ES384_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::Es384,
+};
+
+#[cfg(feature = "es512")]
+pub const ES512_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::Es512,
+};
+
+#[cfg(feature = "es256k")]
+pub const ES256K_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::Es256k,
+};
+
 #[cfg(feature = "ed25519")]
 pub const EDDSA_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
     cred_type: PublicKeyCredentialType::PublicKey,
     alg: SignatureAlgorithm::Eddsa,
 };
 
+#[cfg(feature = "ed448")]
+pub const ED448_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::Ed448,
+};
+
+#[cfg(feature = "mldsa")]
+pub const ML_DSA_44_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa44,
+};
+
+#[cfg(feature = "mldsa")]
+pub const ML_DSA_65_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa65,
+};
+
+#[cfg(feature = "mldsa")]
+pub const ML_DSA_87_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa87,
+};
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_44_ES256_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa44Es256,
+};
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_65_ES256_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa65Es256,
+};
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_87_ES384_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa87Es384,
+};
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_44_ED25519_CRED_PARAM: PublicKeyCredentialParameter =
+    PublicKeyCredentialParameter {
+        cred_type: PublicKeyCredentialType::PublicKey,
+        alg: SignatureAlgorithm::MlDsa44Ed25519,
+    };
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_65_ED25519_CRED_PARAM: PublicKeyCredentialParameter =
+    PublicKeyCredentialParameter {
+        cred_type: PublicKeyCredentialType::PublicKey,
+        alg: SignatureAlgorithm::MlDsa65Ed25519,
+    };
+
+#[cfg(feature = "pq_composite")]
+pub const ML_DSA_87_ED448_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::MlDsa87Ed448,
+};
+
+#[cfg(feature = "rs256")]
+pub const RS256_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::Rs256,
+};
+
+#[cfg(feature = "fndsa")]
+pub const FN_DSA_512_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::FnDsa512,
+};
+
+#[cfg(feature = "fndsa")]
+pub const FN_DSA_1024_CRED_PARAM: PublicKeyCredentialParameter = PublicKeyCredentialParameter {
+    cred_type: PublicKeyCredentialType::PublicKey,
+    alg: SignatureAlgorithm::FnDsa1024,
+};
+
 const SUPPORTED_CRED_PARAMS: &[PublicKeyCredentialParameter] = &[
     ES256_CRED_PARAM,
+    #[cfg(feature = "es384")]
+    ES384_CRED_PARAM,
+    #[cfg(feature = "es512")]
+    ES512_CRED_PARAM,
+    #[cfg(feature = "es256k")]
+    ES256K_CRED_PARAM,
     #[cfg(feature = "ed25519")]
     EDDSA_CRED_PARAM,
+    #[cfg(feature = "ed448")]
+    ED448_CRED_PARAM,
+    #[cfg(feature = "mldsa")]
+    ML_DSA_44_CRED_PARAM,
+    #[cfg(feature = "mldsa")]
+    ML_DSA_65_CRED_PARAM,
+    #[cfg(feature = "mldsa")]
+    ML_DSA_87_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_44_ES256_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_65_ES256_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_87_ES384_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_44_ED25519_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_65_ED25519_CRED_PARAM,
+    #[cfg(feature = "pq_composite")]
+    ML_DSA_87_ED448_CRED_PARAM,
+    #[cfg(feature = "fndsa")]
+    FN_DSA_512_CRED_PARAM,
+    #[cfg(feature = "fndsa")]
+    FN_DSA_1024_CRED_PARAM,
+    #[cfg(feature = "rs256")]
+    RS256_CRED_PARAM,
 ];
 
 fn get_preferred_cred_param(
@@ -256,6 +391,7 @@ fn to_public_source(
         user_icon: None,
         cred_blob: credential_source.cred_blob,
         large_blob_key: None,
+        third_party_payment: credential_source.third_party_payment,
     }
 }
 
@@ -348,7 +484,56 @@ fn wait_and_respond_busy<E: Env>(env: &mut E, channel: Channel) -> CtapResult<()
 /// Blocks for user presence.
 ///
 /// Returns an error in case of timeout, user declining presence request, or keepalive error.
+#[cfg_attr(
+    feature = "up_always_true",
+    allow(unreachable_code, unused_variables)
+)]
 pub fn check_user_presence<E: Env>(env: &mut E, channel: Channel) -> CtapResult<()> {
+    #[cfg(feature = "up_always_true")]
+    {
+        let (cid, transport) = match channel {
+            Channel::MainHid(cid) => (cid, Transport::MainHid),
+            #[cfg(feature = "vendor_hid")]
+            Channel::VendorHid(cid) => (cid, Transport::VendorHid),
+        };
+        let endpoint = transport.usb_endpoint();
+
+        // Send initial KEEPALIVE (STATUS_UPNEEDED) so host knows user interaction is pending.
+        // This satisfies P-9, P-10, and P-15 in the FIDO conformance test suite.
+        let keepalive_msg = CtapHid::<E>::keepalive(cid, KeepaliveStatus::UpNeeded);
+        let _ = send_packets(env, endpoint, keepalive_msg);
+
+        // Poll for incoming CTAPHID_CANCEL packets for 180 ms.
+        // P-15 in the FIDO conformance test suite waits 150 ms before reading KEEPALIVE
+        // and sending CTAPHID_CANCEL. 180 ms provides plenty of margin while minimizing ceremony latency.
+        let mut packet = [0; 64];
+        let delay_timer = env.clock().make_timer(180);
+        let mut keepalive_timer = env.clock().make_timer(KEEPALIVE_DELAY_MS);
+        while !env.clock().is_elapsed(&delay_timer) {
+            if env.clock().is_elapsed(&keepalive_timer) {
+                let keepalive_msg = CtapHid::<E>::keepalive(cid, KeepaliveStatus::UpNeeded);
+                let _ = send_packets(env, endpoint, keepalive_msg);
+                keepalive_timer = env.clock().make_timer(KEEPALIVE_DELAY_MS);
+            }
+            match env.hid_connection().recv(&mut packet, 20) {
+                Ok(RecvStatus::Received(rx_endpoint)) => {
+                    let (received_cid, processed_packet) =
+                        CtapHid::<E>::process_single_packet(&packet);
+                    if rx_endpoint != endpoint || received_cid != cid {
+                        let busy_error = CtapHid::<E>::busy_error(received_cid);
+                        let _ = send_packets(env, rx_endpoint, busy_error);
+                    } else if is_cancel(&processed_packet) {
+                        debug_ctap!(env, "User presence check cancelled");
+                        return Err(Ctap2StatusCode::CTAP2_ERR_KEEPALIVE_CANCEL);
+                    }
+                }
+                _ => (),
+            }
+        }
+
+        return Ok(());
+    }
+
     const TIMEOUT_ERROR: Ctap2StatusCode = Ctap2StatusCode::CTAP2_ERR_USER_ACTION_TIMEOUT;
 
     env.user_presence().check_init();
@@ -644,9 +829,9 @@ impl<E: Env> CtapState<E> {
             return response;
         }
         let cmd = Command::deserialize(command_cbor);
-        debug_ctap!(env, "Received command: {:#?}", cmd);
+        debug_ctap!(env, "Received command: {:?}", cmd);
         let response = cmd.and_then(|command| self.process_parsed_command(env, command, channel));
-        debug_ctap!(env, "Sending response: {:#?}", response);
+        debug_ctap!(env, "Sending response: {:?}", response);
         match response {
             Ok(response_data) => {
                 let mut response_vec = vec![Ctap2StatusCode::CTAP2_OK as u8];
@@ -809,6 +994,7 @@ impl<E: Env> CtapState<E> {
             pin_uv_auth_param,
             pin_uv_auth_protocol,
             enterprise_attestation,
+            attestation_formats_preference,
         } = make_credential_params;
 
         self.pin_uv_auth_precheck(env, &pin_uv_auth_param, pin_uv_auth_protocol, channel)?;
@@ -820,9 +1006,18 @@ impl<E: Env> CtapState<E> {
 
         let rp_id = rp.rp_id;
         let ep_att = if let Some(enterprise_attestation) = enterprise_attestation {
+            let has_provisioned_ep = env
+                .persist()
+                .get_attestation(AttestationId::Enterprise)?
+                .is_some();
             let authenticator_mode = env
                 .customization()
                 .enterprise_attestation_mode()
+                .or(if has_provisioned_ep {
+                    Some(EnterpriseAttestationMode::PlatformManaged)
+                } else {
+                    None
+                })
                 .ok_or(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
             if !storage::enterprise_attestation(env)? {
                 return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
@@ -915,6 +1110,23 @@ impl<E: Env> CtapState<E> {
         }
         self.client_pin.clear_token_flags();
 
+        let attestation = if ep_att {
+            Some(
+                env.persist()
+                    .get_attestation(AttestationId::Enterprise)?
+                    .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?,
+            )
+        } else if env.customization().use_batch_attestation() {
+            env.persist()
+                .get_attestation(AttestationId::Batch)?
+                .filter(|att| !att.certificate.is_empty())
+        } else {
+            None
+        };
+        let mtc_att = attestation
+            .as_ref()
+            .and_then(|att| mtc::ProvisionedMtcAttestation::from_bytes(&att.certificate));
+
         let default_cred_protect = env.customization().default_cred_protect();
         let mut cred_protect_policy = extensions.cred_protect;
         if cred_protect_policy.unwrap_or(CredentialProtectionPolicy::UserVerificationOptional)
@@ -937,7 +1149,8 @@ impl<E: Env> CtapState<E> {
         let has_extension_output = extensions.hmac_secret
             || extensions.cred_protect.is_some()
             || min_pin_length
-            || has_cred_blob_output;
+            || has_cred_blob_output
+            || extensions.mtc_debug;
         if has_extension_output {
             flags |= ED_FLAG
         };
@@ -949,6 +1162,19 @@ impl<E: Env> CtapState<E> {
         // We decide on the algorithm early, but delay key creation since it takes time.
         // We rather do that later so all intermediate checks may return faster.
         let private_key = PrivateKey::new(env, algorithm);
+        let hmac_secret_mc_output = if extensions.hmac_secret {
+            if let Some(hmac_secret_input) = extensions.hmac_secret_mc {
+                let cred_random = self.generate_cred_random(env, &private_key, has_uv)?;
+                Some(
+                    self.client_pin
+                        .process_hmac_secret(env, hmac_secret_input, &cred_random)?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let credential_id = if options.rk {
             let random_id = env.rng().gen_uniform_u8x32().to_vec();
             let credential_source = PublicKeyCredentialSource {
@@ -972,6 +1198,7 @@ impl<E: Env> CtapState<E> {
                     .map(|s| truncate_to_char_boundary(&s, 64).to_string()),
                 cred_blob,
                 large_blob_key: large_blob_key.clone(),
+                third_party_payment: extensions.third_party_payment,
             };
             storage::store_credential(env, credential_source)?;
             random_id
@@ -981,6 +1208,7 @@ impl<E: Env> CtapState<E> {
                 rp_id_hash,
                 cred_protect_policy,
                 cred_blob,
+                third_party_payment: extensions.third_party_payment,
             };
             env.key_store()
                 .wrap_credential(credential_source)
@@ -997,6 +1225,18 @@ impl<E: Env> CtapState<E> {
         auth_data.extend(&credential_id);
         let public_cose_key = private_key.get_pub_key()?;
         cbor_write(cbor::Value::from(public_cose_key), &mut auth_data)?;
+        let explicit_mtc_pref = attestation_formats_preference.as_deref().is_some_and(|prefs| {
+            prefs.iter().any(|pref| {
+                mtc_att.is_some()
+                    && matches!(
+                        pref.as_str(),
+                        mtc::MTC_FORMAT_STR
+                            | mtc::MTC_KEYREF_FORMAT_STR
+                            | mtc::MTC_MDS_FORMAT_STR
+                    )
+            })
+        });
+
         if has_extension_output {
             let hmac_secret_output = if extensions.hmac_secret {
                 Some(true)
@@ -1009,11 +1249,109 @@ impl<E: Env> CtapState<E> {
                 None
             };
             let cred_protect_output = extensions.cred_protect.and(cred_protect_policy);
+            let mtc_debug_output = if extensions.mtc_debug {
+                let primary_att_key = attestation
+                    .as_ref()
+                    .and_then(|att| PrivateKey::<E>::from_attestation_bytes(&att.wrapped_private_key));
+                let debug_att_key = if !ep_att
+                    && !algorithm.is_mldsa()
+                    && !explicit_mtc_pref
+                    && let Some(c_key) = mtc_att.as_ref().and_then(|m| m.classical_key.as_ref())
+                {
+                    PrivateKey::<E>::from_attestation_bytes(c_key)
+                } else {
+                    attestation
+                        .as_ref()
+                        .and_then(|att| PrivateKey::<E>::from_attestation_bytes(&att.wrapped_private_key))
+                };
+                let cose_pk = match debug_att_key.as_ref() {
+                    Some(att_k) => att_k.get_pub_key()?,
+                    None => private_key.get_pub_key()?,
+                };
+                let mut pk_bytes = Vec::new();
+                cbor_write(cbor::Value::from(cose_pk), &mut pk_bytes)?;
+
+                // Privacy Gate (WebAuthn Level 4 PR §10.2.1):
+                // `deviceSerial` MUST ONLY be populated when Enterprise Attestation (`ep_att == true`)
+                // was granted. For non-enterprise registrations (`ep_att == false`), `deviceSerial`
+                // MUST be omitted to preserve batch anonymity.
+                let device_serial_opt = if ep_att
+                    && let Some(ent_mtc) = mtc_att.as_ref()
+                {
+                    mtc::MtcProof::from_tls_bytes(&ent_mtc.cert.mtc_proof).and_then(|p| {
+                        if p.extensions.is_empty() {
+                            None
+                        } else {
+                            String::from_utf8(p.extensions).ok()
+                        }
+                    })
+                } else {
+                    None
+                };
+
+                let (not_before_opt, not_after_opt, fw_version_opt, mtc_proof_opt, root_hash_opt) =
+                    if let Some(active_mtc) = mtc_att.as_ref() {
+                        let mtc_pk_bytes = if let Some(ref prim_k) = primary_att_key {
+                            let mut buf = Vec::new();
+                            cbor_write(cbor::Value::from(prim_k.get_pub_key()?), &mut buf)?;
+                            buf
+                        } else {
+                            pk_bytes.clone()
+                        };
+                        let aaguid = env.persist().aaguid()?;
+                        let root_hash = mtc::compute_mtc_root_hash::<Sha<E>>(
+                            &active_mtc.cert,
+                            &mtc_pk_bytes,
+                            &aaguid,
+                        )
+                        .map(|rh| rh.to_vec());
+                        let proof_opt = if active_mtc.cert.mtc_proof.is_empty() {
+                            None
+                        } else {
+                            Some(active_mtc.cert.mtc_proof.clone())
+                        };
+                        let nb_opt =
+                            if active_mtc.cert.not_before == 0 && active_mtc.cert.not_after == 0 {
+                                None
+                            } else {
+                                Some(active_mtc.cert.not_before)
+                            };
+                        let na_opt =
+                            if active_mtc.cert.not_before == 0 && active_mtc.cert.not_after == 0 {
+                                None
+                            } else {
+                                Some(active_mtc.cert.not_after)
+                            };
+                        (
+                            nb_opt,
+                            na_opt,
+                            active_mtc.cert.firmware_version,
+                            proof_opt,
+                            root_hash,
+                        )
+                    } else {
+                        (None, None, env.firmware_version(), None, None)
+                    };
+
+                Some(cbor::Value::from(mtc::MtcDebugOutput {
+                    pub_key: pk_bytes,
+                    device_serial: device_serial_opt,
+                    not_before: not_before_opt,
+                    not_after: not_after_opt,
+                    firmware_version: fw_version_opt,
+                    mtc_proof: mtc_proof_opt,
+                    root_hash: root_hash_opt,
+                }))
+            } else {
+                None
+            };
             let extensions_output = cbor_map_options! {
                 "credBlob" => cred_blob_output,
+                "mtc-debug" => mtc_debug_output,
                 "credProtect" => cred_protect_output,
                 "hmac-secret" => hmac_secret_output,
                 "minPinLength" => min_pin_length_output,
+                "hmac-secret-mc" => hmac_secret_mc_output,
             };
             cbor_write(extensions_output, &mut auth_data)?;
         }
@@ -1021,41 +1359,204 @@ impl<E: Env> CtapState<E> {
         let mut signature_data = auth_data.clone();
         signature_data.extend(client_data_hash);
 
-        let attestation_id = if ep_att {
-            Some(AttestationId::Enterprise)
-        } else if env.customization().use_batch_attestation() {
-            Some(AttestationId::Batch)
-        } else {
-            None
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum SelectedAttestationFormat {
+            Mtc,
+            Packed,
+            NoneFormat,
+        }
+
+        let default_format = match &mtc_att {
+            Some(_) => SelectedAttestationFormat::Mtc,
+            None => SelectedAttestationFormat::Packed,
         };
-        let (signature, x5c) = match attestation_id {
-            Some(id) => {
+        let selected_format = match attestation_formats_preference.as_deref() {
+            Some(prefs) => prefs
+                .iter()
+                .find_map(|pref| match pref.as_str() {
+                    mtc::MTC_FORMAT_STR
+                    | mtc::MTC_KEYREF_FORMAT_STR
+                    | mtc::MTC_MDS_FORMAT_STR
+                        if mtc_att.is_some() =>
+                    {
+                        Some(SelectedAttestationFormat::Mtc)
+                    }
+                    "packed" => Some(SelectedAttestationFormat::Packed),
+                    "none" if !ep_att => Some(SelectedAttestationFormat::NoneFormat),
+                    _ => None,
+                })
+                .unwrap_or(default_format),
+            None => default_format,
+        };
+
+        let (fmt, alg, signature, x5c, pub_key, mtc_cert) = match selected_format {
+            SelectedAttestationFormat::NoneFormat => (
+                String::from("none"),
+                0,
+                Vec::new(),
+                None,
+                None,
+                None,
+            ),
+            SelectedAttestationFormat::Mtc => {
                 let Attestation {
                     wrapped_private_key,
-                    certificate,
-                } = env
-                    .persist()
-                    .get_attestation(id)?
-                    .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                let attestation_key = EcdsaSk::<E>::import(&wrapped_private_key)
-                    .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                (
-                    attestation_key.sign(&signature_data).to_der(),
-                    Some(vec![certificate]),
-                )
+                    ..
+                } = attestation.ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                let mtc_att = mtc_att.ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+
+                // Second Non-Enterprise Batch X.509 Certificate (`cKey` + `cX5c`):
+                // For non-Enterprise MakeCredential requests where the credential algorithm is
+                // non-ML-DSA (e.g., ES256, ES384, ES512, Ed25519, Ed448, RS256) and the client did
+                // not explicitly request "mtc" via 0x0B, use the provisioned classical
+                // batch key and X.509 certificate when present.
+                if !ep_att
+                    && !algorithm.is_mldsa()
+                    && !explicit_mtc_pref
+                    && let (Some(c_key), Some(c_x5c)) =
+                        (mtc_att.classical_key.as_ref(), mtc_att.classical_x5c.as_ref())
+                {
+                    let classical_att_key = PrivateKey::<E>::from_attestation_bytes(c_key)
+                        .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                    let c_alg = classical_att_key.signature_algorithm() as i64;
+                    let c_sig = classical_att_key.sign_and_encode(&signature_data)?;
+                    (
+                        String::from("packed"),
+                        c_alg,
+                        c_sig,
+                        Some(vec![c_x5c.clone()]),
+                        None,
+                        None,
+                    )
+                } else {
+                    let attestation_key =
+                        PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
+                            .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                    let alg = attestation_key.signature_algorithm() as i64;
+                    let sig = attestation_key.sign_and_encode(&signature_data)?;
+
+                    // Tier 1 (Both Non-Enterprise and Enterprise): If no explicit MTC format was
+                    // requested via 0x0B (e.g., 0x0B is omitted or empty) and an X.509 certificate
+                    // (`x5c`) was provisioned alongside `mtcCert`, provide standard `"packed"`
+                    // attestation with `x5c` whenever the total response fits in 7,609 B!
+                    // If `x5c` is too large for the 7,609 B budget, cascade to Tier 2 (`"mtc"`).
+                    if !explicit_mtc_pref
+                        && let Some(x5c_der) = mtc_att.x5c.as_ref()
+                        && auth_data.len() + sig.len() + x5c_der.len() + 60 <= 7550
+                    {
+                        (
+                            String::from("packed"),
+                            alg,
+                            sig,
+                            Some(vec![x5c_der.clone()]),
+                            None,
+                            None,
+                        )
+                    } else {
+                        let wire_mtc_cert = if !ep_att && mtc_att.key_ref {
+                            mtc_att.cert.to_key_ref()
+                        } else {
+                            mtc_att.cert
+                        };
+                        (
+                            String::from(mtc::MTC_FORMAT_STR),
+                            alg,
+                            sig,
+                            None,
+                            None,
+                            Some(wire_mtc_cert),
+                        )
+                    }
+                }
             }
-            None => (private_key.sign_and_encode(&signature_data)?, None),
+            SelectedAttestationFormat::Packed => match (attestation, mtc_att) {
+                (
+                    Some(Attestation {
+                        wrapped_private_key,
+                        certificate,
+                    }),
+                    None,
+                ) => {
+                    let attestation_key =
+                        PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
+                            .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                    let alg = attestation_key.signature_algorithm() as i64;
+                    let sig = attestation_key.sign_and_encode(&signature_data)?;
+                    (
+                        String::from("packed"),
+                        alg,
+                        sig,
+                        Some(vec![certificate]),
+                        None,
+                        None,
+                    )
+                }
+                (
+                    Some(Attestation { .. }),
+                    Some(mtc::ProvisionedMtcAttestation {
+                        classical_key: Some(c_key),
+                        classical_x5c: Some(c_x5c),
+                        ..
+                    }),
+                ) if !ep_att && !algorithm.is_mldsa() => {
+                    let classical_att_key = PrivateKey::<E>::from_attestation_bytes(&c_key)
+                        .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                    let c_alg = classical_att_key.signature_algorithm() as i64;
+                    let c_sig = classical_att_key.sign_and_encode(&signature_data)?;
+                    (
+                        String::from("packed"),
+                        c_alg,
+                        c_sig,
+                        Some(vec![c_x5c]),
+                        None,
+                        None,
+                    )
+                }
+                (
+                    Some(Attestation {
+                        wrapped_private_key,
+                        ..
+                    }),
+                    Some(mtc::ProvisionedMtcAttestation {
+                        x5c: Some(x5c_der), ..
+                    }),
+                ) => {
+                    let attestation_key =
+                        PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
+                            .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
+                    let alg = attestation_key.signature_algorithm() as i64;
+                    let sig = attestation_key.sign_and_encode(&signature_data)?;
+                    (
+                        String::from("packed"),
+                        alg,
+                        sig,
+                        Some(vec![x5c_der]),
+                        None,
+                        None,
+                    )
+                }
+                _ => (
+                    String::from("packed"),
+                    algorithm as i64,
+                    private_key.sign_and_encode(&signature_data)?,
+                    None,
+                    None,
+                    None,
+                ),
+            },
         };
         let attestation_statement = PackedAttestationStatement {
-            alg: algorithm as i64,
+            alg,
             sig: signature,
             x5c,
             ecdaa_key_id: None,
+            pub_key,
+            mtc_cert,
         };
         let ep_att = if ep_att { Some(true) } else { None };
         Ok(ResponseData::AuthenticatorMakeCredential(
             AuthenticatorMakeCredentialResponse {
-                fmt: String::from("packed"),
+                fmt,
                 auth_data,
                 att_stmt: attestation_statement,
                 ep_att,
@@ -1098,7 +1599,7 @@ impl<E: Env> CtapState<E> {
 
         let private_key = PrivateKey::from_cbor(credential.wrapped_private_key)?;
         // Process extensions.
-        if extensions.hmac_secret.is_some() || extensions.cred_blob {
+        if extensions.hmac_secret.is_some() || extensions.cred_blob || extensions.third_party_payment {
             let encrypted_output = if let Some(hmac_secret_input) = extensions.hmac_secret {
                 let cred_random = self.generate_cred_random(env, &private_key, has_uv)?;
                 Some(
@@ -1114,9 +1615,15 @@ impl<E: Env> CtapState<E> {
             } else {
                 None
             };
+            let third_party_payment = if extensions.third_party_payment {
+                Some(credential.third_party_payment)
+            } else {
+                None
+            };
             let extensions_output = cbor_map_options! {
                 "credBlob" => cred_blob,
                 "hmac-secret" => encrypted_output,
+                "thirdPartyPayment" => third_party_payment,
             };
             cbor_write(extensions_output, &mut auth_data)?;
         }
@@ -1259,7 +1766,7 @@ impl<E: Env> CtapState<E> {
         if options.up {
             flags |= UP_FLAG;
         }
-        if extensions.hmac_secret.is_some() || extensions.cred_blob {
+        if extensions.hmac_secret.is_some() || extensions.cred_blob || extensions.third_party_payment {
             flags |= ED_FLAG;
         }
 
@@ -1352,6 +1859,7 @@ impl<E: Env> CtapState<E> {
         let mut versions = vec![
             String::from(FIDO2_VERSION_STRING),
             String::from(FIDO2_1_VERSION_STRING),
+            String::from(FIDO2_3_VERSION_STRING),
         ];
         #[cfg(feature = "ctap1")]
         if !has_always_uv {
@@ -1365,6 +1873,7 @@ impl<E: Env> CtapState<E> {
             ),
             (String::from("up"), true),
             (String::from("pinUvAuthToken"), true),
+            (String::from("perCredMgmtRO"), true),
             (String::from("largeBlobs"), true),
             #[cfg(feature = "config_command")]
             (String::from("authnrCfg"), true),
@@ -1382,23 +1891,62 @@ impl<E: Env> CtapState<E> {
             options.push((String::from("uv"), has_fingerprint));
             options.push((String::from("bioEnroll"), has_fingerprint));
         }
-        if env.customization().enterprise_attestation_mode().is_some() {
+        let has_enterprise_attestation = env.customization().enterprise_attestation_mode().is_some()
+            || env
+                .persist()
+                .get_attestation(AttestationId::Enterprise)?
+                .is_some();
+        if has_enterprise_attestation {
             options.push((String::from("ep"), storage::enterprise_attestation(env)?));
         }
         let mut pin_protocols = vec![PinUvAuthProtocol::V2 as u64];
         if env.customization().allows_pin_protocol_v1() {
             pin_protocols.push(PinUvAuthProtocol::V1 as u64);
         }
+        let attestation_formats = if env.customization().use_batch_attestation() {
+            match env
+                .persist()
+                .get_attestation(AttestationId::Batch)?
+                .and_then(|att| mtc::ProvisionedMtcAttestation::from_bytes(&att.certificate))
+            {
+                Some(_) => vec![
+                    String::from(mtc::MTC_FORMAT_STR),
+                    String::from("packed"),
+                ],
+                None => vec![String::from("packed")],
+            }
+        } else {
+            vec![String::from("packed")]
+        };
+
+        let ppuat = storage::persistent_pin_uv_auth_token(env)?;
+        let enc_id_plain = storage::enc_identifier(env)?;
+        let enc_state_plain = storage::enc_cred_store_state(env)?;
+        let enc_identifier = Some(Self::encrypt_with_persistent_token(
+            env,
+            &ppuat,
+            b"encIdentifier",
+            &enc_id_plain,
+        ));
+        let enc_cred_store_state = Some(Self::encrypt_with_persistent_token(
+            env,
+            &ppuat,
+            b"encCredStoreState",
+            &enc_state_plain,
+        ));
 
         Ok(ResponseData::AuthenticatorGetInfo(
             AuthenticatorGetInfoResponse {
                 versions,
                 extensions: Some(vec![
                     String::from("hmac-secret"),
+                    String::from("hmac-secret-mc"),
                     String::from("credProtect"),
                     String::from("minPinLength"),
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
+                    String::from("thirdPartyPayment"),
+                    String::from("mtc-debug"),
                 ]),
                 aaguid: env.persist().aaguid()?,
                 options: Some(options),
@@ -1437,18 +1985,56 @@ impl<E: Env> CtapState<E> {
                 remaining_discoverable_credentials: Some(
                     storage::remaining_credentials(env)? as u64
                 ),
+                attestation_formats: Some(attestation_formats),
+                enc_identifier,
+                enc_cred_store_state,
+                #[cfg(feature = "config_command")]
+                authenticator_config_commands: Some(if has_enterprise_attestation {
+                    vec![0x01, 0x02, 0x03]
+                } else {
+                    vec![0x02, 0x03]
+                }),
+                #[cfg(not(feature = "config_command"))]
+                authenticator_config_commands: None,
             },
         ))
     }
 
+    fn encrypt_with_persistent_token(
+        env: &mut E,
+        ppuat: &[u8; 32],
+        info: &[u8],
+        plaintext: &[u8; 16],
+    ) -> Vec<u8> {
+        use aes::cipher::generic_array::GenericArray;
+        use aes::cipher::{BlockEncryptMut, KeyIvInit};
+        let mut okm = [0u8; 32];
+        Hkdf::<E>::hkdf_empty_salt_256(ppuat, info, &mut okm);
+        let aes_key = &okm[..16];
+        let random_bytes = env.rng().gen_uniform_u8x32();
+        let iv = &random_bytes[..16];
+        let mut block = *plaintext;
+        let mut encryptor = cbc::Encryptor::<aes::Aes128>::new_from_slices(aes_key, iv).unwrap();
+        encryptor.encrypt_block_mut(GenericArray::from_mut_slice(&mut block));
+        let mut result = Vec::with_capacity(32);
+        result.extend_from_slice(iv);
+        result.extend_from_slice(&block);
+        result
+    }
+
     fn process_reset(&mut self, env: &mut E, channel: Channel) -> CtapResult<ResponseData> {
-        if !matches!(
-            self.stateful_command_permission.get_command(env)?,
-            StatefulCommand::Reset
-        ) {
-            return Err(Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED);
+        #[cfg(not(feature = "no_reset_restrictions"))]
+        {
+            if !matches!(
+                self.stateful_command_permission.get_command(env)?,
+                StatefulCommand::Reset
+            ) {
+                return Err(Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED);
+            }
+            check_user_presence(env, channel)?;
         }
-        check_user_presence(env, channel)?;
+        #[cfg(feature = "no_reset_restrictions")]
+        let _ = channel;
 
         reset(env)?;
         self.client_pin.reset(env);
@@ -1466,8 +2052,53 @@ impl<E: Env> CtapState<E> {
     }
 
     fn process_selection(&self, env: &mut E, channel: Channel) -> CtapResult<ResponseData> {
-        check_user_presence(env, channel)?;
-        Ok(ResponseData::AuthenticatorSelection)
+        #[cfg(feature = "up_always_true")]
+        {
+            let (cid, transport) = match channel {
+                Channel::MainHid(cid) => (cid, Transport::MainHid),
+                #[cfg(feature = "vendor_hid")]
+                Channel::VendorHid(cid) => (cid, Transport::VendorHid),
+            };
+            let endpoint = transport.usb_endpoint();
+
+            // Send initial KEEPALIVE (STATUS_UPNEEDED) so host knows user interaction is pending.
+            let keepalive_msg = CtapHid::<E>::keepalive(cid, KeepaliveStatus::UpNeeded);
+            let _ = send_packets(env, endpoint, keepalive_msg);
+
+            // In authenticatorSelection (P-15), host waits 150ms before expecting keepalive and sending CANCEL.
+            // Wait up to 5000ms sending periodic keepalives every 100ms and checking for CANCEL.
+            let mut packet = [0; 64];
+            let delay_timer = env.clock().make_timer(5000);
+            let mut keepalive_timer = env.clock().make_timer(KEEPALIVE_DELAY_MS);
+            while !env.clock().is_elapsed(&delay_timer) {
+                if env.clock().is_elapsed(&keepalive_timer) {
+                    let keepalive_msg = CtapHid::<E>::keepalive(cid, KeepaliveStatus::UpNeeded);
+                    let _ = send_packets(env, endpoint, keepalive_msg);
+                    keepalive_timer = env.clock().make_timer(KEEPALIVE_DELAY_MS);
+                }
+                match env.hid_connection().recv(&mut packet, 20) {
+                    Ok(RecvStatus::Received(rx_endpoint)) => {
+                        let (received_cid, processed_packet) =
+                            CtapHid::<E>::process_single_packet(&packet);
+                        if rx_endpoint != endpoint || received_cid != cid {
+                            let busy_error = CtapHid::<E>::busy_error(received_cid);
+                            let _ = send_packets(env, rx_endpoint, busy_error);
+                        } else if is_cancel(&processed_packet) {
+                            debug_ctap!(env, "Selection cancelled");
+                            return Err(Ctap2StatusCode::CTAP2_ERR_KEEPALIVE_CANCEL);
+                        }
+                    }
+                    Ok(RecvStatus::Timeout) => {}
+                    Err(_) => return Err(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR),
+                }
+            }
+            Ok(ResponseData::AuthenticatorSelection)
+        }
+        #[cfg(not(feature = "up_always_true"))]
+        {
+            check_user_presence(env, channel)?;
+            Ok(ResponseData::AuthenticatorSelection)
+        }
     }
 
     pub fn generate_auth_data(
@@ -1521,7 +2152,7 @@ mod test {
     use crate::env::EcdhSk;
     use crate::env::test::TestEnv;
     use crate::test_helpers;
-    use cbor::{cbor_array, cbor_array_vec, cbor_map};
+    use cbor::{cbor_array, cbor_array_vec, cbor_map, destructure_cbor_map};
 
     // The keep-alive logic in the processing of some commands needs a channel ID to send
     // keep-alive packets to.
@@ -1582,6 +2213,19 @@ mod test {
         let aaguid = env.persist().aaguid().unwrap();
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
         let info_reponse = ctap_state.process_command(&mut env, &[0x04], DUMMY_CHANNEL);
+        let parsed_map = data_formats::extract_map(cbor_read(&info_reponse[1..]).unwrap()).unwrap();
+        let enc_id = parsed_map
+            .iter()
+            .find(|(k, _)| *k == cbor::cbor_int!(0x19))
+            .map(|(_, v)| data_formats::extract_byte_string(v.clone()).unwrap())
+            .unwrap();
+        let enc_state = parsed_map
+            .iter()
+            .find(|(k, _)| *k == cbor::cbor_int!(0x1E))
+            .map(|(_, v)| data_formats::extract_byte_string(v.clone()).unwrap())
+            .unwrap();
+        assert_eq!(enc_id.len(), 32);
+        assert_eq!(enc_state.len(), 32);
 
         // Fails when removing `to_vec` for `SUPPORTED_CRED_PARAMS` as linted.
         #[allow(clippy::unnecessary_to_owned)]
@@ -1591,13 +2235,17 @@ mod test {
                     String::from(U2F_VERSION_STRING),
                     String::from(FIDO2_VERSION_STRING),
                     String::from(FIDO2_1_VERSION_STRING),
+                    String::from(FIDO2_3_VERSION_STRING),
                 ]],
             0x02 => cbor_array![
                     String::from("hmac-secret"),
+                    String::from("hmac-secret-mc"),
                     String::from("credProtect"),
                     String::from("minPinLength"),
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
+                    String::from("thirdPartyPayment"),
+                    String::from("mtc-debug"),
                 ],
             0x03 => &aaguid[..],
             0x04 => cbor_map_options! {
@@ -1615,6 +2263,7 @@ mod test {
                 "bioEnroll" => false,
                 "clientPin" => false,
                 "largeBlobs" => true,
+                "perCredMgmtRO" => true,
                 "pinUvAuthToken" => true,
                 #[cfg(feature = "config_command")]
                 "setMinPINLength" => true,
@@ -1635,6 +2284,11 @@ mod test {
             0x11 => env.customization().preferred_platform_uv_attempts() as u64,
             0x12 => 0x02,
             0x14 => storage::remaining_credentials(&mut env).unwrap() as u64,
+            0x16 => cbor_array!["packed", "none"],
+            0x19 => enc_id,
+            0x1E => enc_state,
+            #[cfg(feature = "config_command")]
+            0x1F => cbor_array![2, 3],
         };
 
         let mut response_cbor = vec![0x00];
@@ -1649,6 +2303,19 @@ mod test {
         let aaguid = env.persist().aaguid().unwrap();
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
         let info_reponse = ctap_state.process_command(&mut env, &[0x04], DUMMY_CHANNEL);
+        let parsed_map = data_formats::extract_map(cbor_read(&info_reponse[1..]).unwrap()).unwrap();
+        let enc_id = parsed_map
+            .iter()
+            .find(|(k, _)| *k == cbor::cbor_int!(0x19))
+            .map(|(_, v)| data_formats::extract_byte_string(v.clone()).unwrap())
+            .unwrap();
+        let enc_state = parsed_map
+            .iter()
+            .find(|(k, _)| *k == cbor::cbor_int!(0x1E))
+            .map(|(_, v)| data_formats::extract_byte_string(v.clone()).unwrap())
+            .unwrap();
+        assert_eq!(enc_id.len(), 32);
+        assert_eq!(enc_state.len(), 32);
 
         // Fails when removing `to_vec` for `SUPPORTED_CRED_PARAMS` as linted.
         #[allow(clippy::unnecessary_to_owned)]
@@ -1658,13 +2325,17 @@ mod test {
                     String::from(U2F_VERSION_STRING),
                     String::from(FIDO2_VERSION_STRING),
                     String::from(FIDO2_1_VERSION_STRING),
+                    String::from(FIDO2_3_VERSION_STRING),
                 ]],
             0x02 => cbor_array![
                     String::from("hmac-secret"),
+                    String::from("hmac-secret-mc"),
                     String::from("credProtect"),
                     String::from("minPinLength"),
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
+                    String::from("thirdPartyPayment"),
+                    String::from("mtc-debug"),
                 ],
             0x03 => &aaguid[..],
             0x04 => cbor_map_options! {
@@ -1680,6 +2351,7 @@ mod test {
                 "authnrCfg" => true,
                 "clientPin" => false,
                 "largeBlobs" => true,
+                "perCredMgmtRO" => true,
                 "pinUvAuthToken" => true,
                 #[cfg(feature = "config_command")]
                 "setMinPINLength" => true,
@@ -1698,6 +2370,11 @@ mod test {
             0x0F => env.customization().max_cred_blob_length() as u64,
             0x10 => env.customization().max_rp_ids_length() as u64,
             0x14 => storage::remaining_credentials(&mut env).unwrap() as u64,
+            0x16 => cbor_array!["packed"],
+            0x19 => enc_id,
+            0x1E => enc_state,
+            #[cfg(feature = "config_command")]
+            0x1F => cbor_array![2, 3],
         };
 
         let mut response_cbor = vec![0x00];
@@ -1751,6 +2428,7 @@ mod test {
             pin_uv_auth_param: None,
             pin_uv_auth_protocol: None,
             enterprise_attestation: None,
+            attestation_formats_preference: None,
         }
     }
 
@@ -1866,6 +2544,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, excluded_credential_source).is_ok());
 
@@ -2825,6 +3504,294 @@ mod test {
         test_helper_resident_process_get_assertion_hmac_secret(PinUvAuthProtocol::V2);
     }
 
+    fn test_helper_make_credential_hmac_secret_mc(
+        pin_uv_auth_protocol: PinUvAuthProtocol,
+        rk: bool,
+        salts: Vec<u8>,
+    ) {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        // 1. Obtain authenticator keyAgreement public key.
+        let client_pin_params = AuthenticatorClientPinParameters {
+            pin_uv_auth_protocol,
+            sub_command: ClientPinSubCommand::GetKeyAgreement,
+            key_agreement: None,
+            pin_uv_auth_param: None,
+            new_pin_enc: None,
+            pin_hash_enc: None,
+            permissions: None,
+            permissions_rp_id: None,
+        };
+        let key_agreement_response = ctap_state
+            .client_pin
+            .process_command(&mut env, client_pin_params, DUMMY_CHANNEL)
+            .unwrap();
+        let authnr_public_key = match key_agreement_response {
+            ResponseData::AuthenticatorClientPin(Some(client_pin_response)) => {
+                client_pin_response.key_agreement.unwrap()
+            }
+            _ => panic!("Invalid response type"),
+        };
+
+        // 2. Platform encapsulates shared secret and builds hmac-secret-mc input.
+        let platform_sk = EcdhSk::<TestEnv>::random(env.rng());
+        let platform_pk = platform_sk.public_key();
+        let pin_protocol = PinProtocol::<TestEnv>::new_test(platform_sk, [0x91; 32]);
+        let shared_secret = pin_protocol
+            .decapsulate(authnr_public_key, pin_uv_auth_protocol)
+            .unwrap();
+
+        let salt_enc = shared_secret.encrypt(&mut env, &salts).unwrap();
+        let salt_auth = shared_secret.authenticate(&salt_enc);
+        let hmac_secret_input = GetAssertionHmacSecretInput {
+            key_agreement: CoseKey::from_ecdh_public_key::<TestEnv>(platform_pk),
+            salt_enc,
+            salt_auth,
+            pin_uv_auth_protocol,
+        };
+
+        let mut make_credential_params = create_minimal_make_credential_parameters();
+        make_credential_params.options.rk = rk;
+        make_credential_params.extensions = MakeCredentialExtensions {
+            hmac_secret: true,
+            hmac_secret_mc: Some(hmac_secret_input.clone()),
+            ..Default::default()
+        };
+        let make_credential_response = ctap_state
+            .process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL)
+            .unwrap();
+
+        // 3. Extract and decrypt hmac-secret-mc output from MakeCredential authData.
+        let mc_auth_data = match &make_credential_response {
+            ResponseData::AuthenticatorMakeCredential(resp) => resp.auth_data.clone(),
+            _ => panic!("Invalid response type"),
+        };
+        let non_rk_cred_id = if !rk {
+            Some(parse_credential_id_from_non_resident_make_credential_response(
+                &mut env,
+                make_credential_response,
+            ))
+        } else {
+            None
+        };
+        // In MakeCredential authData:
+        // 32 (rpIdHash) + 1 (flags) + 4 (signCount) + 16 (aaguid) + 2 (credIdLen) + credIdLen + coseKey + extensions
+        let cred_id_len = ((mc_auth_data[53] as usize) << 8) | (mc_auth_data[54] as usize);
+        // ES256 public COSE key is 77 bytes in canonical CBOR.
+        let ext_offset = 55 + cred_id_len + 77;
+        let mc_ext_cbor = cbor::read(&mc_auth_data[ext_offset..]).unwrap();
+        destructure_cbor_map! {
+            let {
+                "hmac-secret" => mc_hmac_secret_enabled,
+                "hmac-secret-mc" => mc_hmac_secret_enc,
+            } = mc_ext_cbor.extract_map().unwrap();
+        }
+        assert_eq!(mc_hmac_secret_enabled.unwrap().extract_bool(), Some(true));
+        let mc_output_enc = mc_hmac_secret_enc.unwrap().extract_byte_string().unwrap();
+        let mc_decrypted_prf = shared_secret.decrypt(&mc_output_enc).unwrap();
+        assert_eq!(mc_decrypted_prf.len(), salts.len());
+
+        // 4. Perform GetAssertion with the exact same hmac-secret input and verify outputs match!
+        let allow_list = non_rk_cred_id.map(|key_id| {
+            vec![PublicKeyCredentialDescriptor {
+                key_type: PublicKeyCredentialType::PublicKey,
+                key_id,
+                transports: None,
+            }]
+        });
+        let get_assertion_params = AuthenticatorGetAssertionParameters {
+            rp_id: String::from("example.com"),
+            client_data_hash: vec![0xCD],
+            allow_list,
+            extensions: GetAssertionExtensions {
+                hmac_secret: Some(hmac_secret_input),
+                ..Default::default()
+            },
+            options: GetAssertionOptions {
+                up: true,
+                uv: false,
+            },
+            pin_uv_auth_param: None,
+            pin_uv_auth_protocol: None,
+        };
+        let get_assertion_response = ctap_state
+            .process_get_assertion(&mut env, get_assertion_params, DUMMY_CHANNEL)
+            .unwrap();
+        let ga_auth_data = match get_assertion_response {
+            ResponseData::AuthenticatorGetAssertion(resp) => resp.auth_data,
+            _ => panic!("Invalid response type"),
+        };
+        let ga_ext_cbor = cbor::read(&ga_auth_data[37..]).unwrap();
+        let ga_output_enc = {
+            destructure_cbor_map! {
+                let {
+                    "hmac-secret" => ga_hmac_secret_enc,
+                } = ga_ext_cbor.extract_map().unwrap();
+            }
+            ga_hmac_secret_enc.unwrap().extract_byte_string().unwrap()
+        };
+        let ga_decrypted_prf = shared_secret.decrypt(&ga_output_enc).unwrap();
+        assert_eq!(&mc_decrypted_prf[..], &ga_decrypted_prf[..]);
+    }
+
+    #[test]
+    fn test_process_make_credential_hmac_secret_mc_v1() {
+        test_helper_make_credential_hmac_secret_mc(PinUvAuthProtocol::V1, false, vec![0x11; 32]);
+        test_helper_make_credential_hmac_secret_mc(PinUvAuthProtocol::V1, true, vec![0x22; 64]);
+    }
+
+    #[test]
+    fn test_process_make_credential_hmac_secret_mc_v2() {
+        test_helper_make_credential_hmac_secret_mc(PinUvAuthProtocol::V2, false, vec![0x33; 32]);
+        test_helper_make_credential_hmac_secret_mc(PinUvAuthProtocol::V2, true, vec![0x44; 64]);
+    }
+
+    #[test]
+    fn test_process_make_credential_hmac_secret_mc_invalid_aborts_before_storage() {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        let platform_sk = EcdhSk::<TestEnv>::random(env.rng());
+        let platform_pk = platform_sk.public_key();
+        let bad_hmac_secret_input = GetAssertionHmacSecretInput {
+            key_agreement: CoseKey::from_ecdh_public_key::<TestEnv>(platform_pk),
+            salt_enc: vec![0x00; 32],
+            salt_auth: vec![0xFF; 16],
+            pin_uv_auth_protocol: PinUvAuthProtocol::V1,
+        };
+        let mut make_credential_params = create_minimal_make_credential_parameters();
+        make_credential_params.options.rk = true;
+        make_credential_params.extensions = MakeCredentialExtensions {
+            hmac_secret: true,
+            hmac_secret_mc: Some(bad_hmac_secret_input),
+            ..Default::default()
+        };
+        assert_eq!(
+            ctap_state.process_make_credential(&mut env, make_credential_params, DUMMY_CHANNEL),
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
+        );
+        // Verify no resident credential was written to storage on failure.
+        let mut iter_result = Ok(());
+        let count = storage::iter_credentials(&mut env, &mut iter_result)
+            .unwrap()
+            .count();
+        iter_result.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_webauthn_prf_ctap_test_vectors() {
+        // Test vectors from W3C WebAuthn Level 4 §"CTAP2 `hmac-secret` extension"
+        // (scratch/GitHub/webauthn/index.bs lines 10169-10273)
+        let mut env = TestEnv::default();
+        let cred_random: [u8; 32] = [
+            0x43, 0x7e, 0x06, 0x5e, 0x72, 0x3a, 0x98, 0xb2, 0xf0, 0x8f, 0x39, 0xd8, 0xba, 0xf7,
+            0xc5, 0x3e, 0xcb, 0x3c, 0x36, 0x3c, 0x5e, 0x51, 0x04, 0xbd, 0xaa, 0xf5, 0xd5, 0xca,
+            0x2e, 0x02, 0x81, 0x54,
+        ];
+        let prf_eval_first = b"WebAuthn PRF test vectors\x02";
+        let prf_eval_second = b"WebAuthn PRF test vectors\x03";
+
+        let mut salt1_input = b"WebAuthn PRF\x00".to_vec();
+        salt1_input.extend_from_slice(prf_eval_first);
+        let salt1 = Sha::<TestEnv>::digest(&salt1_input);
+        assert_eq!(
+            salt1,
+            [
+                0x52, 0x74, 0x13, 0xeb, 0xb4, 0x82, 0x93, 0x77, 0x2d, 0xf3, 0x0f, 0x03, 0x1c,
+                0x5a, 0xc4, 0x65, 0x0c, 0x7d, 0xe1, 0x4b, 0xf9, 0x49, 0x86, 0x71, 0xae, 0x16,
+                0x34, 0x47, 0xb6, 0xa7, 0x72, 0xb3,
+            ]
+        );
+
+        let mut salt2_input = b"WebAuthn PRF\x00".to_vec();
+        salt2_input.extend_from_slice(prf_eval_second);
+        let salt2 = Sha::<TestEnv>::digest(&salt2_input);
+        assert_eq!(
+            salt2,
+            [
+                0xd6, 0x8a, 0xc0, 0x33, 0x29, 0xa1, 0x0e, 0xe5, 0xe0, 0xec, 0x83, 0x44, 0x92,
+                0xbb, 0x9a, 0x96, 0xa0, 0xe5, 0x47, 0xba, 0xf5, 0x63, 0xbf, 0x78, 0xcc, 0xbe,
+                0x87, 0x89, 0xb2, 0x2e, 0x77, 0x6b,
+            ]
+        );
+
+        let expected_output1: [u8; 32] = [
+            0x3c, 0x33, 0xe0, 0x7d, 0x20, 0x2c, 0x3b, 0x02, 0x9c, 0xc2, 0x1f, 0x17, 0x22, 0x76,
+            0x70, 0x21, 0xbf, 0x27, 0xd5, 0x95, 0x93, 0x3b, 0x3d, 0x2b, 0x6a, 0x1b, 0x9d, 0x5d,
+            0xdd, 0xc7, 0x7f, 0xae,
+        ];
+        let expected_output2: [u8; 32] = [
+            0xa6, 0x2a, 0x87, 0x73, 0xb1, 0x9c, 0xda, 0x90, 0xd7, 0xed, 0x4e, 0xf7, 0x2a, 0x80,
+            0xa8, 0x04, 0x32, 0x0d, 0xbd, 0x39, 0x97, 0xe2, 0xf6, 0x63, 0x80, 0x5a, 0xd1, 0xfd,
+            0x32, 0x93, 0xd5, 0x0b,
+        ];
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        for protocol in [PinUvAuthProtocol::V1, PinUvAuthProtocol::V2] {
+            let client_pin_params = AuthenticatorClientPinParameters {
+                pin_uv_auth_protocol: protocol,
+                sub_command: ClientPinSubCommand::GetKeyAgreement,
+                key_agreement: None,
+                pin_uv_auth_param: None,
+                new_pin_enc: None,
+                pin_hash_enc: None,
+                permissions: None,
+                permissions_rp_id: None,
+            };
+            let key_agreement_response = ctap_state
+                .client_pin
+                .process_command(&mut env, client_pin_params, DUMMY_CHANNEL)
+                .unwrap();
+            let authnr_cose_pk = match key_agreement_response {
+                ResponseData::AuthenticatorClientPin(Some(client_pin_response)) => {
+                    client_pin_response.key_agreement.unwrap()
+                }
+                _ => panic!("Invalid response type"),
+            };
+            let plat_sk = EcdhSk::<TestEnv>::random(env.rng());
+            let plat_cose_pk = CoseKey::from_ecdh_public_key::<TestEnv>(plat_sk.public_key());
+            let pin_protocol = PinProtocol::<TestEnv>::new_test(plat_sk, [0x91; 32]);
+            let shared_secret = pin_protocol.decapsulate(authnr_cose_pk, protocol).unwrap();
+
+            // Single-input case
+            let salt_enc_1 = shared_secret.encrypt(&mut env, &salt1).unwrap();
+            let salt_auth_1 = shared_secret.authenticate(&salt_enc_1);
+            let input_1 = GetAssertionHmacSecretInput {
+                key_agreement: plat_cose_pk.clone(),
+                salt_enc: salt_enc_1,
+                salt_auth: salt_auth_1,
+                pin_uv_auth_protocol: protocol,
+            };
+            let output_enc_1 = ctap_state
+                .client_pin
+                .process_hmac_secret(&mut env, input_1, &cred_random)
+                .unwrap();
+            let decrypted_1 = shared_secret.decrypt(&output_enc_1).unwrap();
+            assert_eq!(&decrypted_1[..], &expected_output1);
+
+            // Two-input case
+            let mut salts_both = salt1.to_vec();
+            salts_both.extend_from_slice(&salt2);
+            let salt_enc_2 = shared_secret.encrypt(&mut env, &salts_both).unwrap();
+            let salt_auth_2 = shared_secret.authenticate(&salt_enc_2);
+            let input_2 = GetAssertionHmacSecretInput {
+                key_agreement: plat_cose_pk,
+                salt_enc: salt_enc_2,
+                salt_auth: salt_auth_2,
+                pin_uv_auth_protocol: protocol,
+            };
+            let output_enc_2 = ctap_state
+                .client_pin
+                .process_hmac_secret(&mut env, input_2, &cred_random)
+                .unwrap();
+            let decrypted_2 = shared_secret.decrypt(&output_enc_2).unwrap();
+            assert_eq!(&decrypted_2[..32], &expected_output1);
+            assert_eq!(&decrypted_2[32..], &expected_output2);
+        }
+    }
+
     #[test]
     fn test_resident_process_get_assertion_with_cred_protect() {
         let mut env = TestEnv::default();
@@ -2853,6 +3820,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, credential).is_ok());
 
@@ -2905,6 +3873,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, credential).is_ok());
 
@@ -3022,6 +3991,7 @@ mod test {
             user_icon: None,
             cred_blob: Some(vec![0xCB]),
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, credential).is_ok());
 
@@ -3142,6 +4112,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: Some(vec![0x1C; 32]),
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, credential).is_ok());
 
@@ -3431,6 +4402,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert!(storage::store_credential(&mut env, credential_source).is_ok());
         assert!(storage::count_credentials(&mut env).unwrap() > 0);
@@ -3442,6 +4414,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(feature = "no_reset_restrictions"))]
     fn test_process_reset_cancelled() {
         let mut env = TestEnv::default();
         env.user_presence().set(|| Err(UserPresenceError::Canceled));
@@ -3456,6 +4429,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(feature = "no_reset_restrictions"))]
     fn test_process_reset_not_first() {
         let mut env = TestEnv::default();
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
@@ -3465,6 +4439,22 @@ mod test {
 
         let reset_reponse = ctap_state.process_reset(&mut env, DUMMY_CHANNEL);
         assert_eq!(reset_reponse, Err(Ctap2StatusCode::CTAP2_ERR_NOT_ALLOWED));
+    }
+
+    #[test]
+    #[cfg(feature = "no_reset_restrictions")]
+    fn test_process_reset_unrestricted() {
+        let mut env = TestEnv::default();
+        env.user_presence().set(|| Err(UserPresenceError::Canceled));
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        // Execute another command and advance clock past reset timeout.
+        ctap_state.process_command(&mut env, &[0x08], DUMMY_CHANNEL);
+        env.clock().advance(RESET_TIMEOUT_DURATION_MS);
+
+        let reset_response =
+            ctap_state.process_parsed_command(&mut env, Command::AuthenticatorReset, DUMMY_CHANNEL);
+        assert_eq!(reset_response, Ok(ResponseData::AuthenticatorReset));
     }
 
     #[test]
@@ -3564,6 +4554,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(feature = "no_reset_restrictions"))]
     fn test_reset_timeout() {
         let mut env = TestEnv::default();
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
@@ -3620,6 +4611,7 @@ mod test {
             user_icon: Some("icon".to_string()),
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
 
         let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
@@ -3921,4 +4913,1671 @@ mod test {
         );
         assert_eq!(response, Err(Ctap2StatusCode::CTAP1_ERR_INVALID_SEQ));
     }
+
+    #[test]
+    #[cfg(feature = "mldsa")]
+    fn test_mldsa_make_credential_and_get_assertion() {
+        use crate::api::crypto::mldsa::{
+            ML_DSA_44_SIG_SIZE, ML_DSA_65_SIG_SIZE, ML_DSA_87_SIG_SIZE, MlDsaVariant,
+        };
+        use crate::ctap::command::AuthenticatorGetAssertionParameters;
+        use ml_dsa::{
+            EncodedVerifyingKey, MlDsa44, MlDsa65, MlDsa87, Signature, Verifier, VerifyingKey,
+        };
+
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        for (cred_param, variant, expected_sig_size) in [
+            (
+                ML_DSA_44_CRED_PARAM,
+                MlDsaVariant::MlDsa44,
+                ML_DSA_44_SIG_SIZE,
+            ),
+            (
+                ML_DSA_65_CRED_PARAM,
+                MlDsaVariant::MlDsa65,
+                ML_DSA_65_SIG_SIZE,
+            ),
+            (
+                ML_DSA_87_CRED_PARAM,
+                MlDsaVariant::MlDsa87,
+                ML_DSA_87_SIG_SIZE,
+            ),
+        ] {
+            for rk in [false, true] {
+                let mut make_params = create_minimal_make_credential_parameters();
+                make_params.pub_key_cred_params = vec![cred_param.clone()];
+                make_params.options.rk = rk;
+                let make_resp = ctap_state
+                    .process_make_credential(&mut env, make_params, DUMMY_CHANNEL)
+                    .unwrap();
+                let (cred_id, cose_key_bytes) = match make_resp {
+                    ResponseData::AuthenticatorMakeCredential(r) => {
+                        assert_eq!(r.att_stmt.alg, cred_param.alg as i64);
+                        assert_eq!(r.att_stmt.sig.len(), expected_sig_size);
+                        assert!(r.att_stmt.x5c.is_none());
+                        let offset = 37 + env.persist().aaguid().unwrap().len();
+                        let cred_id_len =
+                            u16::from_be_bytes([r.auth_data[offset], r.auth_data[offset + 1]])
+                                as usize;
+                        let cred_id = r.auth_data[offset + 2..offset + 2 + cred_id_len].to_vec();
+                        let cose_key_bytes = r.auth_data[offset + 2 + cred_id_len..].to_vec();
+                        (cred_id, cose_key_bytes)
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                };
+
+                let cose_val = cbor_read(&cose_key_bytes).unwrap();
+                let cose_key = CoseKey::try_from(cose_val.clone()).unwrap();
+                assert_eq!(cbor::Value::from(cose_key), cose_val);
+
+                let get_params = AuthenticatorGetAssertionParameters {
+                    rp_id: String::from("example.com"),
+                    client_data_hash: vec![0xCD; 32],
+                    allow_list: if rk {
+                        None
+                    } else {
+                        Some(vec![PublicKeyCredentialDescriptor {
+                            key_type: PublicKeyCredentialType::PublicKey,
+                            key_id: cred_id.clone(),
+                            transports: None,
+                        }])
+                    },
+                    extensions: Default::default(),
+                    options: GetAssertionOptions {
+                        up: true,
+                        uv: false,
+                    },
+                    pin_uv_auth_param: None,
+                    pin_uv_auth_protocol: None,
+                };
+                let get_resp = ctap_state
+                    .process_get_assertion(&mut env, get_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match get_resp {
+                    ResponseData::AuthenticatorGetAssertion(r) => {
+                        assert_eq!(r.signature.len(), expected_sig_size);
+                        // Extract raw public key from COSE_Key map (-1 => pub_bytes)
+                        let pub_bytes = cose_val
+                            .extract_map()
+                            .unwrap()
+                            .into_iter()
+                            .find(|(k, _)| *k == cbor::Value::from(-1i64))
+                            .unwrap()
+                            .1
+                            .extract_byte_string()
+                            .unwrap();
+                        let mut signed_data = r.auth_data.clone();
+                        signed_data.extend_from_slice(&[0xCD; 32]);
+                        match variant {
+                            MlDsaVariant::MlDsa44 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa44>::try_from(pub_bytes.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa44>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa44>::try_from(r.signature.as_slice()).unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            MlDsaVariant::MlDsa65 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa65>::try_from(pub_bytes.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa65>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa65>::try_from(r.signature.as_slice()).unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            MlDsaVariant::MlDsa87 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa87>::try_from(pub_bytes.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa87>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa87>::try_from(r.signature.as_slice()).unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                        }
+                    }
+                    _ => panic!("Expected AuthenticatorGetAssertion"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "es384", feature = "es512", feature = "ed448"))]
+    fn test_es384_es512_and_ed448_make_credential_and_get_assertion() {
+        use crate::api::crypto::ed448::{ED448_SIG_SIZE, verify_with_context};
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        for cred_param in [ES384_CRED_PARAM, ES512_CRED_PARAM, ED448_CRED_PARAM] {
+            for rk in [false, true] {
+                let mut make_params = create_minimal_make_credential_parameters();
+                make_params.pub_key_cred_params = vec![cred_param.clone()];
+                make_params.options.rk = rk;
+                let make_resp = ctap_state
+                    .process_make_credential(&mut env, make_params, DUMMY_CHANNEL)
+                    .unwrap();
+                let (cred_id, cose_key_bytes) = match make_resp {
+                    ResponseData::AuthenticatorMakeCredential(r) => {
+                        let offset = 37 + env.persist().aaguid().unwrap().len();
+                        let cred_id_len =
+                            u16::from_be_bytes([r.auth_data[offset], r.auth_data[offset + 1]])
+                                as usize;
+                        let cred_id = r.auth_data[offset + 2..offset + 2 + cred_id_len].to_vec();
+                        let cose_key_bytes = r.auth_data[offset + 2 + cred_id_len..].to_vec();
+                        (cred_id, cose_key_bytes)
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                };
+
+                let cose_val = cbor_read(&cose_key_bytes).unwrap();
+                let cose_key = CoseKey::try_from(cose_val.clone()).unwrap();
+                assert_eq!(cbor::Value::from(cose_key.clone()), cose_val);
+
+                let get_params = AuthenticatorGetAssertionParameters {
+                    rp_id: String::from("example.com"),
+                    client_data_hash: vec![0xCD; 32],
+                    allow_list: if rk {
+                        None
+                    } else {
+                        Some(vec![PublicKeyCredentialDescriptor {
+                            key_type: PublicKeyCredentialType::PublicKey,
+                            key_id: cred_id.clone(),
+                            transports: None,
+                        }])
+                    },
+                    extensions: Default::default(),
+                    options: GetAssertionOptions {
+                        up: true,
+                        uv: false,
+                    },
+                    pin_uv_auth_param: None,
+                    pin_uv_auth_protocol: None,
+                };
+                let get_resp = ctap_state
+                    .process_get_assertion(&mut env, get_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match get_resp {
+                    ResponseData::AuthenticatorGetAssertion(r) => {
+                        let mut signed_data = r.auth_data.clone();
+                        signed_data.extend_from_slice(&[0xCD; 32]);
+                        let cose_map = cose_val.extract_map().unwrap();
+                        let x_bytes = cose_map
+                            .iter()
+                            .find(|(k, _)| *k == cbor::Value::from(-2i64))
+                            .unwrap()
+                            .1
+                            .clone()
+                            .extract_byte_string()
+                            .unwrap();
+                        match cred_param.alg {
+                            SignatureAlgorithm::Es384 => {
+                                use p384::ecdsa::signature::Verifier as _;
+                                let y_bytes = cose_map
+                                    .iter()
+                                    .find(|(k, _)| *k == cbor::Value::from(-3i64))
+                                    .unwrap()
+                                    .1
+                                    .clone()
+                                    .extract_byte_string()
+                                    .unwrap();
+                                let mut sec1 = vec![0x04];
+                                sec1.extend_from_slice(&x_bytes);
+                                sec1.extend_from_slice(&y_bytes);
+                                let vk =
+                                    p384::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).unwrap();
+                                let sig =
+                                    p384::ecdsa::Signature::from_der(&r.signature).unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            SignatureAlgorithm::Es512 => {
+                                use p521::ecdsa::signature::Verifier as _;
+                                let y_bytes = cose_map
+                                    .iter()
+                                    .find(|(k, _)| *k == cbor::Value::from(-3i64))
+                                    .unwrap()
+                                    .1
+                                    .clone()
+                                    .extract_byte_string()
+                                    .unwrap();
+                                let mut sec1 = vec![0x04];
+                                sec1.extend_from_slice(&x_bytes);
+                                sec1.extend_from_slice(&y_bytes);
+                                let vk =
+                                    p521::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).unwrap();
+                                let sig =
+                                    p521::ecdsa::Signature::from_der(&r.signature).unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            SignatureAlgorithm::Ed448 => {
+                                assert_eq!(r.signature.len(), ED448_SIG_SIZE);
+                                let pk_arr = <[u8; 57]>::try_from(x_bytes.as_slice()).unwrap();
+                                let sig_arr =
+                                    <[u8; ED448_SIG_SIZE]>::try_from(r.signature.as_slice())
+                                        .unwrap();
+                                assert!(verify_with_context(&pk_arr, &signed_data, &sig_arr, b""));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => panic!("Expected AuthenticatorGetAssertion"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "mldsa")]
+    fn test_mldsa44_enterprise_attestation_with_large_cert() {
+        use crate::api::crypto::mldsa::{MlDsaSecretKey, MlDsaVariant};
+        use ml_dsa::{
+            EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey, signature::Verifier as _,
+        };
+
+        let mut env = TestEnv::default();
+        env.customization_mut().setup_enterprise_attestation(
+            Some(EnterpriseAttestationMode::VendorFacilitated),
+            Some(vec!["example.com".to_string()]),
+        );
+
+        let seed = [0x37u8; 32];
+        let mldsa_sk = MlDsaSecretKey::import(MlDsaVariant::MlDsa44, &seed).unwrap();
+        let mldsa_pk_bytes = mldsa_sk.public_key_bytes();
+        let large_cert: Vec<u8> = (0..4000).map(|i| (i % 253) as u8).collect();
+
+        let attestation = Attestation::try_from(cbor_map! {
+            0x01 => large_cert.clone(),
+            0x02 => seed.to_vec(),
+            0x03 => SignatureAlgorithm::MlDsa44 as i64,
+        })
+        .unwrap();
+        env.persist()
+            .set_attestation(AttestationId::Enterprise, Some(&attestation))
+            .unwrap();
+        env.persist().enable_enterprise_attestation().unwrap();
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+        let mut make_params = create_minimal_make_credential_parameters();
+        make_params.enterprise_attestation = Some(1);
+        let make_resp = ctap_state
+            .process_make_credential(&mut env, make_params, DUMMY_CHANNEL)
+            .unwrap();
+
+        match make_resp {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.ep_att, Some(true));
+                assert_eq!(r.att_stmt.alg, SignatureAlgorithm::MlDsa44 as i64);
+                assert_eq!(r.att_stmt.x5c, Some(vec![large_cert]));
+
+                let mut signed_data = r.auth_data.clone();
+                signed_data.extend_from_slice(&[0xCD]);
+                let pk_enc =
+                    EncodedVerifyingKey::<MlDsa44>::try_from(mldsa_pk_bytes.as_slice()).unwrap();
+                let vk = VerifyingKey::<MlDsa44>::decode(&pk_enc);
+                let sig = Signature::<MlDsa44>::try_from(r.att_stmt.sig.as_slice()).unwrap();
+                assert!(vk.verify(&signed_data, &sig).is_ok());
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "mldsa", feature = "pq_composite"))]
+    fn test_pq_mtc_and_mtc_mds_attestation_formats() {
+        use crate::api::crypto::mldsa::{MlDsaSecretKey, MlDsaVariant};
+        use crate::ctap::mtc::{
+            FidoMtcLogEntry, MtcAttestationFormat, MtcCertDescriptor, MtcProof,
+            MtcRevokedSerialRange, MtcSubtree, MtcTrustAnchor, MtcVerificationError,
+            ProvisionedMtcAttestation, compute_inclusion_proof, compute_subtree_hash,
+            verify_mtc_cert_and_resolve_pubkey,
+        };
+        use ml_dsa::{
+            EncodedVerifyingKey, MlDsa44, MlDsa65, MlDsa87, Signature, VerifyingKey,
+            signature::Verifier as _,
+        };
+
+        let ca_id = vec![0x83, 0x99, 0x3F, 0x01, 0x01]; // PEN OID relative TrustAnchorID
+        let log_number: u16 = 7;
+        let not_before: u64 = 1_760_000_000;
+        let not_after: u64 = 1_893_456_000;
+        let current_time: u64 = 1_790_000_000;
+        let fw_version = Some(42u64);
+
+        let pq_algorithms = [
+            SignatureAlgorithm::MlDsa44,
+            SignatureAlgorithm::MlDsa65,
+            SignatureAlgorithm::MlDsa87,
+        ];
+
+        for &att_alg in &pq_algorithms {
+            for &mtc_format in &[MtcAttestationFormat::Mtc, MtcAttestationFormat::MtcMds] {
+                let mut env = TestEnv::default();
+                let aaguid = [0xA5u8; 16];
+                env.persist().set_aaguid(&aaguid).unwrap();
+
+                let seed = [0x42u8; 32];
+                let variant = match att_alg {
+                    SignatureAlgorithm::MlDsa44 => MlDsaVariant::MlDsa44,
+                    SignatureAlgorithm::MlDsa65 => MlDsaVariant::MlDsa65,
+                    SignatureAlgorithm::MlDsa87 => MlDsaVariant::MlDsa87,
+                    _ => unreachable!(),
+                };
+                let mldsa_sk = MlDsaSecretKey::import(variant, &seed).unwrap();
+                let cose_pk = CoseKey::from_mldsa_public_key(
+                    att_alg as i64,
+                    mldsa_sk.public_key_bytes(),
+                );
+                let mut canonical_cose_pk_bytes = Vec::new();
+                cbor_write(cbor::Value::from(cose_pk), &mut canonical_cose_pk_bytes).unwrap();
+                let pub_key_hash = Sha::<TestEnv>::digest(&canonical_cose_pk_bytes);
+
+                // Build an 8-entry vendor batch issuance log where our authenticator is at index 5.
+                let our_index: usize = 5;
+                let our_serial: u64 = ((log_number as u64) << 48) | (our_index as u64);
+                let mut leaf_hashes = Vec::new();
+                for idx in 0..8usize {
+                    let serial = ((log_number as u64) << 48) | (idx as u64);
+                    let pk_hash = if idx == our_index {
+                        pub_key_hash
+                    } else {
+                        [idx as u8; 32]
+                    };
+                    let entry = FidoMtcLogEntry {
+                        ca_id: ca_id.clone(),
+                        serial,
+                        not_before,
+                        not_after,
+                        aaguid,
+                        fw_version,
+                        pub_key_hash: pk_hash,
+                        extensions: Vec::new(),
+                    };
+                    leaf_hashes.push(entry.leaf_hash::<Sha<TestEnv>>());
+                }
+
+                // Compute the Landmark SubtreeHash [0, 8) and the 3-node RFC 9162 inclusion path for index 5.
+                let landmark_root = compute_subtree_hash::<Sha<TestEnv>>(&leaf_hashes);
+                let inclusion_path =
+                    compute_inclusion_proof::<Sha<TestEnv>>(our_index, &leaf_hashes);
+                assert_eq!(inclusion_path.len(), 3); // log2(8) = 3 sibling hashes (96 bytes)
+
+                let mtc_proof = MtcProof::new_landmark(0, 8, inclusion_path);
+                let mtc_proof_bytes = mtc_proof.to_tls_bytes().unwrap();
+                assert_eq!(mtc_proof_bytes.len(), 2 + 6 + 6 + 2 + 96 + 3); // 115 bytes total!
+
+                let mtc_cert_desc = MtcCertDescriptor {
+                    ca_id: ca_id.clone(),
+                    serial: our_serial,
+                    not_before,
+                    not_after,
+                    firmware_version: fw_version,
+                    mtc_proof: mtc_proof_bytes.clone(),
+                };
+                let x509_der_len = match att_alg {
+                    SignatureAlgorithm::MlDsa44 => 4127,
+                    SignatureAlgorithm::MlDsa65 => 5656,
+                    SignatureAlgorithm::MlDsa87 => 7614,
+                    _ => unreachable!(),
+                };
+                let mock_x509_der = vec![0x30u8; x509_der_len];
+                let provisioned = ProvisionedMtcAttestation {
+                    format: mtc_format,
+                    cert: mtc_cert_desc.clone(),
+                    x5c: Some(mock_x509_der.clone()),
+                    classical_key: None,
+                    classical_x5c: None,
+                    key_ref: false,
+                };
+                let provisioned_bytes = provisioned.to_bytes().unwrap();
+
+                let attestation = Attestation::try_from(cbor_map! {
+                    0x01 => provisioned_bytes,
+                    0x02 => seed.to_vec(),
+                    0x03 => att_alg as i64,
+                })
+                .unwrap();
+                env.persist()
+                    .set_attestation(AttestationId::Batch, Some(&attestation))
+                    .unwrap();
+
+                // Execute MakeCredential with a matching post-quantum credential algorithm.
+                let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+                let get_info_resp = ctap_state.process_get_info(&mut env).unwrap();
+                match get_info_resp {
+                    ResponseData::AuthenticatorGetInfo(info) => {
+                        let formats = info.attestation_formats.unwrap();
+                        assert_eq!(
+                            formats,
+                            vec![String::from("mtc"), String::from("packed")]
+                        );
+                        assert!(
+                            info.extensions
+                                .unwrap()
+                                .contains(&String::from("mtc-debug"))
+                        );
+                    }
+                    _ => panic!("Expected AuthenticatorGetInfo"),
+                }
+
+                let make_params = AuthenticatorMakeCredentialParameters {
+                    client_data_hash: vec![0xCD; 32],
+                    rp: PublicKeyCredentialRpEntity {
+                        rp_id: String::from("example.com"),
+                        rp_name: None,
+                        rp_icon: None,
+                    },
+                    user: PublicKeyCredentialUserEntity {
+                        user_id: vec![0x11; 16],
+                        user_name: Some(String::from("alice")),
+                        user_display_name: None,
+                        user_icon: None,
+                    },
+                    pub_key_cred_params: vec![PublicKeyCredentialParameter {
+                        cred_type: PublicKeyCredentialType::PublicKey,
+                        alg: att_alg,
+                    }],
+                    exclude_list: None,
+                    extensions: MakeCredentialExtensions::default(),
+                    options: MakeCredentialOptions {
+                        rk: true,
+                        uv: false,
+                    },
+                    pin_uv_auth_param: None,
+                    pin_uv_auth_protocol: None,
+                    enterprise_attestation: None,
+                    attestation_formats_preference: Some(vec![String::from(mtc_format.as_str())]),
+                };
+
+                let make_resp = ctap_state
+                    .process_make_credential(&mut env, make_params.clone(), DUMMY_CHANNEL)
+                    .unwrap();
+
+                // Verify un-hinted cascade (attestation_formats_preference: None):
+                // Tier 1 ("packed" with batch x5c when <= 7,550 B) -> Tier 2 ("mtc" omitting pubKey on wire).
+                // - When cred alg == batch alg: MlDsa44 (-48), MlDsa65 (-49), and MlDsa87 (-50) all exceed
+                //   7,550 B for "packed", so they all emit "mtc" (with pubKey omitted on the wire).
+                // - When batch alg is MlDsa44 (-48) and cred alg is classical (ES256), "packed" with
+                //   the 4,127-byte batch X.509 certificate fits in 7,609 B (~6,730 B <= 7,550 B),
+                //   so it returns "packed" with `x5c`!
+                let mut default_params = make_params.clone();
+                default_params.user.user_id = vec![0x12; 16];
+                default_params.attestation_formats_preference = None;
+                let default_resp = ctap_state
+                    .process_make_credential(&mut env, default_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match default_resp {
+                    ResponseData::AuthenticatorMakeCredential(dr) => {
+                        assert_eq!(dr.fmt, "mtc");
+                        assert!(dr.att_stmt.pub_key.is_none());
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+
+                if matches!(att_alg, SignatureAlgorithm::MlDsa44) {
+                    let mut es256_params = make_params.clone();
+                    es256_params.user.user_id = vec![0x44; 16];
+                    es256_params.pub_key_cred_params = vec![PublicKeyCredentialParameter {
+                        cred_type: PublicKeyCredentialType::PublicKey,
+                        alg: SignatureAlgorithm::Es256,
+                    }];
+                    es256_params.attestation_formats_preference = None;
+                    let es256_resp = ctap_state
+                        .process_make_credential(&mut env, es256_params, DUMMY_CHANNEL)
+                        .unwrap();
+                    match es256_resp {
+                        ResponseData::AuthenticatorMakeCredential(er) => {
+                            assert_eq!(er.fmt, "packed");
+                            assert_eq!(er.att_stmt.alg, SignatureAlgorithm::MlDsa44 as i64);
+                            assert_eq!(
+                                er.att_stmt.x5c.as_ref(),
+                                Some(&vec![mock_x509_der.clone()])
+                            );
+                            assert!(er.att_stmt.pub_key.is_none());
+                            assert!(er.att_stmt.mtc_cert.is_none());
+                        }
+                        _ => panic!("Expected AuthenticatorMakeCredential"),
+                    }
+                }
+
+                if matches!(att_alg, SignatureAlgorithm::MlDsa65)
+                    && mtc_format == MtcAttestationFormat::Mtc
+                {
+                    for smaller_cred_alg in [SignatureAlgorithm::Es256, SignatureAlgorithm::MlDsa44]
+                    {
+                        let mut small_cred_params = make_params.clone();
+                        small_cred_params.user.user_id = vec![smaller_cred_alg as i64 as u8; 16];
+                        small_cred_params.pub_key_cred_params = vec![PublicKeyCredentialParameter {
+                            cred_type: PublicKeyCredentialType::PublicKey,
+                            alg: smaller_cred_alg,
+                        }];
+                        small_cred_params.attestation_formats_preference = None;
+                        let small_resp = ctap_state
+                            .process_make_credential(&mut env, small_cred_params, DUMMY_CHANNEL)
+                            .unwrap();
+                        match small_resp {
+                            ResponseData::AuthenticatorMakeCredential(sr) => {
+                                assert_eq!(sr.fmt, "mtc");
+                                assert!(sr.att_stmt.pub_key.is_none());
+                            }
+                            _ => panic!("Expected AuthenticatorMakeCredential"),
+                        }
+                    }
+                }
+
+                // Verify "packed" attestation format preference in 0x0B ALWAYS returns fmt: "packed"
+                // with the batch X.509 certificate (`x5c`) and batch key signature!
+                let mut packed_params = make_params.clone();
+                packed_params.user.user_id = vec![0x14; 16];
+                packed_params.attestation_formats_preference = Some(vec![String::from("packed")]);
+                let packed_resp = ctap_state
+                    .process_make_credential(&mut env, packed_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match packed_resp {
+                    ResponseData::AuthenticatorMakeCredential(pr) => {
+                        assert_eq!(pr.fmt, "packed");
+                        assert_eq!(pr.att_stmt.alg, att_alg as i64);
+                        assert_eq!(
+                            pr.att_stmt.x5c.as_ref(),
+                            Some(&vec![mock_x509_der.clone()])
+                        );
+                        assert!(pr.att_stmt.pub_key.is_none());
+                        assert!(pr.att_stmt.mtc_cert.is_none());
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+
+                // Verify "none" attestation format preference returns fmt: "none" with empty attStmt.
+                let mut none_params = make_params.clone();
+                none_params.user.user_id = vec![0x13; 16];
+                none_params.attestation_formats_preference = Some(vec![String::from("none")]);
+                let none_resp = ctap_state
+                    .process_make_credential(&mut env, none_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match none_resp {
+                    ResponseData::AuthenticatorMakeCredential(nr) => {
+                        assert_eq!(nr.fmt, "none");
+                        assert!(nr.att_stmt.sig.is_empty());
+                        assert!(nr.att_stmt.pub_key.is_none());
+                        assert!(nr.att_stmt.mtc_cert.is_none());
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+
+                // Verify that requesting `"mtc-debug": true` on non-Enterprise MakeCredential
+                // populates `authData.extensions["mtc-debug"]` with the 6 non-enterprise fields
+                // (`pubKey`, `mtcProof`, `notAfter`, `rootHash`, `notBefore`, `firmwareVersion`) and
+                // strictly OMITS `"deviceSerial"` (Privacy Gate).
+                let mut debug_params = make_params.clone();
+                debug_params.user.user_id = vec![0x22; 16];
+                debug_params.extensions.mtc_debug = true;
+                let debug_resp = ctap_state
+                    .process_make_credential(&mut env, debug_params, DUMMY_CHANNEL)
+                    .unwrap();
+                match debug_resp {
+                    ResponseData::AuthenticatorMakeCredential(dr) => {
+                        assert_eq!(dr.fmt, "mtc");
+                        assert!(dr.att_stmt.pub_key.is_none());
+                        assert_eq!(dr.att_stmt.mtc_cert.as_ref(), Some(&mtc_cert_desc));
+                        assert_ne!(dr.auth_data[32] & ED_FLAG, 0);
+                        let mut expected_debug_ext = Vec::new();
+                        cbor_write(
+                            cbor_map_options! {
+                                "mtc-debug" => cbor_map_options! {
+                                    "pubKey" => canonical_cose_pk_bytes.clone(),
+                                    "mtcProof" => mtc_proof_bytes.clone(),
+                                    "notAfter" => not_after,
+                                    "rootHash" => landmark_root.to_vec(),
+                                    "notBefore" => not_before,
+                                    "firmwareVersion" => fw_version,
+                                },
+                            },
+                            &mut expected_debug_ext,
+                        )
+                        .unwrap();
+                        assert!(
+                            dr.auth_data.ends_with(&expected_debug_ext),
+                            "Non-enterprise mtc-debug extension output must include 6 fields and omit deviceSerial"
+                        );
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+
+                // Check full CBOR wire size of the MakeCredential response.
+                let mut wire_cbor = Vec::new();
+                let cbor_val: Option<cbor::Value> = match &make_resp {
+                    ResponseData::AuthenticatorMakeCredential(r) => Some(
+                        AuthenticatorMakeCredentialResponse {
+                            fmt: r.fmt.clone(),
+                            auth_data: r.auth_data.clone(),
+                            att_stmt: PackedAttestationStatement {
+                                alg: r.att_stmt.alg,
+                                sig: r.att_stmt.sig.clone(),
+                                x5c: r.att_stmt.x5c.clone(),
+                                ecdaa_key_id: r.att_stmt.ecdaa_key_id.clone(),
+                                pub_key: r.att_stmt.pub_key.clone(),
+                                mtc_cert: r.att_stmt.mtc_cert.clone(),
+                            },
+                            ep_att: r.ep_att,
+                            large_blob_key: r.large_blob_key.clone(),
+                        }
+                        .into(),
+                    ),
+                    _ => unreachable!(),
+                };
+                cbor_write(cbor_val.unwrap(), &mut wire_cbor).unwrap();
+
+                match make_resp {
+                    ResponseData::AuthenticatorMakeCredential(r) => {
+                        assert_eq!(r.fmt, "mtc");
+                        assert_eq!(r.att_stmt.alg, att_alg as i64);
+                        assert!(r.att_stmt.x5c.is_none());
+                        assert!(r.att_stmt.pub_key.is_none());
+                        assert_eq!(r.att_stmt.mtc_cert.as_ref(), Some(&mtc_cert_desc));
+                        // With "mtc" omitting pubKey on the wire, ALL three (ML-DSA-44, ML-DSA-65, and ML-DSA-87!)
+                        // fit inside a single 7,609-byte USB HID message!
+                        assert!(
+                            wire_cbor.len() < 7609,
+                            "mtc wire size {} exceeded 7609 bytes for {:?}",
+                            wire_cbor.len(),
+                            att_alg
+                        );
+                        #[cfg(feature = "pq_composite")]
+                        if matches!(att_alg, SignatureAlgorithm::MlDsa87) {
+                            for nr_alg in [
+                                SignatureAlgorithm::MlDsa87,
+                                SignatureAlgorithm::MlDsa87Ed448,
+                                SignatureAlgorithm::MlDsa87Es384,
+                            ] {
+                                let nr_params = AuthenticatorMakeCredentialParameters {
+                                    client_data_hash: vec![0xCD; 32],
+                                    rp: PublicKeyCredentialRpEntity {
+                                        rp_id: String::from("example.com"),
+                                        rp_name: None,
+                                        rp_icon: None,
+                                    },
+                                    user: PublicKeyCredentialUserEntity {
+                                        user_id: vec![0x99; 16],
+                                        user_name: Some(String::from("bob")),
+                                        user_display_name: None,
+                                        user_icon: None,
+                                    },
+                                    pub_key_cred_params: vec![
+                                        PublicKeyCredentialParameter {
+                                            cred_type: PublicKeyCredentialType::PublicKey,
+                                            alg: nr_alg,
+                                        },
+                                    ],
+                                    exclude_list: None,
+                                    extensions: MakeCredentialExtensions::default(),
+                                    options: MakeCredentialOptions {
+                                        rk: false,
+                                        uv: false,
+                                    },
+                                    pin_uv_auth_param: None,
+                                    pin_uv_auth_protocol: None,
+                                    enterprise_attestation: None,
+                                    attestation_formats_preference: None,
+                                };
+                                let nr_resp = ctap_state
+                                    .process_make_credential(
+                                        &mut env,
+                                        nr_params,
+                                        DUMMY_CHANNEL,
+                                    )
+                                    .unwrap();
+                                let (nr_cbor_val, cred_id) = match nr_resp {
+                                    ResponseData::AuthenticatorMakeCredential(nr_r) => {
+                                        assert_eq!(nr_r.fmt, "mtc");
+                                        let cred_len = ((nr_r.auth_data[53] as usize) << 8)
+                                            | (nr_r.auth_data[54] as usize);
+                                        let cid =
+                                            nr_r.auth_data[55..55 + cred_len].to_vec();
+                                        (cbor::Value::from(nr_r), cid)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let mut nr_wire = Vec::new();
+                                cbor_write(nr_cbor_val, &mut nr_wire).unwrap();
+                                let fw_ver_overhead = if fw_version.is_some() { 21 } else { 0 };
+                                assert!(
+                                    nr_wire.len() + 1 - fw_ver_overhead <= 7609,
+                                    "non-resident {:?} + ML-DSA-87 batch sig total USB HID frame size {} > 7609",
+                                    nr_alg,
+                                    nr_wire.len() + 1 - fw_ver_overhead
+                                );
+                                let ga_params = AuthenticatorGetAssertionParameters {
+                                    rp_id: String::from("example.com"),
+                                    client_data_hash: vec![0xEE; 32],
+                                    allow_list: Some(vec![PublicKeyCredentialDescriptor {
+                                        key_type: PublicKeyCredentialType::PublicKey,
+                                        key_id: cred_id,
+                                        transports: None,
+                                    }]),
+                                    extensions: GetAssertionExtensions::default(),
+                                    options: GetAssertionOptions {
+                                        up: true,
+                                        uv: false,
+                                    },
+                                    pin_uv_auth_param: None,
+                                    pin_uv_auth_protocol: None,
+                                };
+                                let ga_resp = ctap_state
+                                    .process_get_assertion(
+                                        &mut env,
+                                        ga_params,
+                                        DUMMY_CHANNEL,
+                                    )
+                                    .unwrap();
+                                match ga_resp {
+                                    ResponseData::AuthenticatorGetAssertion(ga_r) => {
+                                        assert!(!ga_r.signature.is_empty());
+                                    }
+                                    _ => panic!("Expected AuthenticatorGetAssertion"),
+                                }
+                            }
+                        }
+
+                        // Construct the Relying Party's FIDO MDS MtcTrustAnchor.
+                        let trust_anchor = MtcTrustAnchor {
+                            ca_id: ca_id.clone(),
+                            log_number,
+                            trusted_subtrees: vec![MtcSubtree {
+                                start: 0,
+                                end: 8,
+                                subtree_hash: landmark_root,
+                            }],
+                            revoked_serial_ranges: vec![MtcRevokedSerialRange {
+                                min_serial: ((log_number as u64) << 48) | 2,
+                                max_serial: ((log_number as u64) << 48) | 3,
+                            }],
+                            batch_keys: vec![(our_serial, canonical_cose_pk_bytes.clone())],
+                        };
+
+                        // RP Step 1: Verify MTC certificate & resolve attestation public key.
+                        let resolved_pk_bytes = verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(
+                            &r.fmt,
+                            r.att_stmt.pub_key.as_deref(),
+                            r.att_stmt.mtc_cert.as_ref().unwrap(),
+                            &r.auth_data,
+                            &trust_anchor,
+                            current_time,
+                        )
+                        .unwrap();
+                        assert_eq!(resolved_pk_bytes, canonical_cose_pk_bytes);
+
+                        // RP Step 2: Decode COSE_Key and verify attestation signature over (authData || clientDataHash).
+                        let mut signed_data = r.auth_data.clone();
+                        signed_data.extend_from_slice(&[0xCD; 32]);
+                        let pk_raw = mldsa_sk.public_key_bytes();
+                        match att_alg {
+                            SignatureAlgorithm::MlDsa44 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa44>::try_from(pk_raw.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa44>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa44>::try_from(r.att_stmt.sig.as_slice())
+                                        .unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            SignatureAlgorithm::MlDsa65 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa65>::try_from(pk_raw.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa65>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa65>::try_from(r.att_stmt.sig.as_slice())
+                                        .unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            SignatureAlgorithm::MlDsa87 => {
+                                let pk_enc =
+                                    EncodedVerifyingKey::<MlDsa87>::try_from(pk_raw.as_slice())
+                                        .unwrap();
+                                let vk = VerifyingKey::<MlDsa87>::decode(&pk_enc);
+                                let sig =
+                                    Signature::<MlDsa87>::try_from(r.att_stmt.sig.as_slice())
+                                        .unwrap();
+                                assert!(vk.verify(&signed_data, &sig).is_ok());
+                            }
+                            _ => unreachable!(),
+                        }
+
+                        // Negative Test 1: Revoked serial range rejects the attestation.
+                        let mut revoked_anchor = trust_anchor.clone();
+                        revoked_anchor
+                            .revoked_serial_ranges
+                            .push(MtcRevokedSerialRange {
+                                min_serial: our_serial,
+                                max_serial: our_serial,
+                            });
+                        assert_eq!(
+                            verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(
+                                &r.fmt,
+                                r.att_stmt.pub_key.as_deref(),
+                                r.att_stmt.mtc_cert.as_ref().unwrap(),
+                                &r.auth_data,
+                                &revoked_anchor,
+                                current_time,
+                            ),
+                            Err(MtcVerificationError::CertificateRevoked)
+                        );
+
+                        // Negative Test 2: Tampered AAGUID in authData causes Merkle root mismatch.
+                        let mut bad_auth_data = r.auth_data.clone();
+                        bad_auth_data[37] ^= 0xFF;
+                        assert_eq!(
+                            verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(
+                                &r.fmt,
+                                r.att_stmt.pub_key.as_deref(),
+                                r.att_stmt.mtc_cert.as_ref().unwrap(),
+                                &bad_auth_data,
+                                &trust_anchor,
+                                current_time,
+                            ),
+                            Err(MtcVerificationError::SubtreeNotTrusted)
+                        );
+
+                        // Negative Test 3: Missing batch key in MDS for "mtc" fails with BatchPublicKeyNotFoundInMds.
+                        let mut empty_mds_anchor = trust_anchor.clone();
+                        empty_mds_anchor.batch_keys.clear();
+                        assert_eq!(
+                            verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(
+                                &r.fmt,
+                                r.att_stmt.pub_key.as_deref(),
+                                r.att_stmt.mtc_cert.as_ref().unwrap(),
+                                &r.auth_data,
+                                &empty_mds_anchor,
+                                current_time,
+                            ),
+                            Err(MtcVerificationError::BatchPublicKeyNotFoundInMds)
+                        );
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+
+                // Verify authenticatorGetInfo (0x04) advertises ["mtc", "packed"].
+                match ctap_state.process_get_info(&mut env).unwrap() {
+                    ResponseData::AuthenticatorGetInfo(info_resp) => {
+                        let expected_formats = vec![
+                            String::from("mtc"),
+                            String::from("packed"),
+                        ];
+                        assert_eq!(info_resp.attestation_formats, Some(expected_formats));
+                    }
+                    _ => panic!("Expected AuthenticatorGetInfo"),
+                }
+
+                // Verify requesting "none" via attestationFormatsPreference (0x0B) produces fmt="none" and attStmt={}.
+                let none_params = AuthenticatorMakeCredentialParameters {
+                    client_data_hash: vec![0xCD; 32],
+                    rp: PublicKeyCredentialRpEntity {
+                        rp_id: String::from("example.com"),
+                        rp_name: None,
+                        rp_icon: None,
+                    },
+                    user: PublicKeyCredentialUserEntity {
+                        user_id: vec![0x22; 16],
+                        user_name: Some(String::from("bob")),
+                        user_display_name: None,
+                        user_icon: None,
+                    },
+                    pub_key_cred_params: vec![PublicKeyCredentialParameter {
+                        cred_type: PublicKeyCredentialType::PublicKey,
+                        alg: att_alg,
+                    }],
+                    exclude_list: None,
+                    extensions: MakeCredentialExtensions::default(),
+                    options: MakeCredentialOptions {
+                        rk: false,
+                        uv: false,
+                    },
+                    pin_uv_auth_param: None,
+                    pin_uv_auth_protocol: None,
+                    enterprise_attestation: None,
+                    attestation_formats_preference: Some(vec![String::from("none")]),
+                };
+                match ctap_state
+                    .process_make_credential(&mut env, none_params, DUMMY_CHANNEL)
+                    .unwrap()
+                {
+                    ResponseData::AuthenticatorMakeCredential(r_none) => {
+                        assert_eq!(r_none.fmt, "none");
+                        assert!(r_none.att_stmt.sig.is_empty());
+                        assert_eq!(cbor::Value::from(r_none.att_stmt), cbor_map_options! {});
+                    }
+                    _ => panic!("Expected AuthenticatorMakeCredential"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dual_key_enterprise_mtc_and_x5c_attestation() {
+        use crate::ctap::mtc::{
+            MTC_NON_EXPIRING_NOT_AFTER, MtcAttestationFormat, MtcCertDescriptor, MtcProof,
+            MtcSubtree, MtcTrustAnchor, ProvisionedMtcAttestation, compute_mtc_root_hash,
+            verify_mtc_cert_and_resolve_pubkey,
+        };
+
+        let mut env = TestEnv::default();
+        let aaguid = [0xAA; 16];
+        env.persist().set_aaguid(&aaguid).unwrap();
+
+        // 1. Provision Key 1: Non-Enterprise 100k-Device Batch Key (AttestationId::Batch)
+        //    configured with `key_ref: true` (proof-less `mtcKeyRef = { caId, serial }` on the wire)
+        //    and non-expiring `not_after = MTC_NON_EXPIRING_NOT_AFTER` (253402300799).
+        let batch_att_key = PrivateKey::<TestEnv>::new(&mut env, SignatureAlgorithm::MlDsa44);
+        let mut batch_sk_bytes = Vec::new();
+        cbor_write(batch_att_key.to_cbor(), &mut batch_sk_bytes).unwrap();
+        let mut batch_pk_bytes = Vec::new();
+        cbor_write(
+            cbor::Value::from(batch_att_key.get_pub_key().unwrap()),
+            &mut batch_pk_bytes,
+        )
+        .unwrap();
+        let batch_proof_tls = MtcProof::new_landmark(0, 1, Vec::new())
+            .to_tls_bytes()
+            .unwrap();
+        let batch_serial = 7u64 << 48;
+        let batch_mtc = ProvisionedMtcAttestation {
+            format: MtcAttestationFormat::Mtc,
+            x5c: None,
+            classical_key: None,
+            classical_x5c: None,
+            key_ref: true,
+            cert: MtcCertDescriptor {
+                ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x01],
+                serial: batch_serial,
+                mtc_proof: batch_proof_tls.clone(),
+                not_before: 1_700_000_000,
+                not_after: MTC_NON_EXPIRING_NOT_AFTER,
+                firmware_version: Some(0),
+            },
+        };
+        assert!(batch_mtc.cert.is_non_expiring());
+        let expected_batch_root_hash =
+            compute_mtc_root_hash::<Sha<TestEnv>>(&batch_mtc.cert, &batch_pk_bytes, &aaguid)
+                .unwrap();
+        env.persist()
+            .set_attestation(
+                AttestationId::Batch,
+                Some(&Attestation {
+                    wrapped_private_key: batch_sk_bytes,
+                    certificate: batch_mtc.to_bytes().unwrap(),
+                }),
+            )
+            .unwrap();
+
+        // 2. Provision Key 2: Enterprise Single-Device Key (AttestationId::Enterprise)
+        //    with BOTH Enterprise mtcCert (`key_ref: false`, full `mtcEntryDesc` with MtcProof.extensions = "123456")
+        //    AND Per-Enterprise-Batch-Key X.509 DER certificate (x5c).
+        let ent_att_key = PrivateKey::<TestEnv>::new(&mut env, SignatureAlgorithm::MlDsa44);
+        let mut ent_sk_bytes = Vec::new();
+        cbor_write(ent_att_key.to_cbor(), &mut ent_sk_bytes).unwrap();
+        let mut ent_pk_bytes = Vec::new();
+        cbor_write(
+            cbor::Value::from(ent_att_key.get_pub_key().unwrap()),
+            &mut ent_pk_bytes,
+        )
+        .unwrap();
+        let ent_x509_der = vec![0x30, 0x82, 0x01, 0x00, 0xEE, 0xFF];
+        let ent_serial = (7u64 << 48) | 42948;
+        let ent_proof_tls = MtcProof {
+            extensions: b"123456".to_vec(),
+            start: 0,
+            end: 131_072,
+            inclusion_proof: vec![[0x22; 32]; 17],
+            signatures: Vec::new(),
+        }
+        .to_tls_bytes()
+        .unwrap();
+        let ent_mtc = ProvisionedMtcAttestation {
+            format: MtcAttestationFormat::Mtc,
+            x5c: Some(ent_x509_der.clone()),
+            classical_key: None,
+            classical_x5c: None,
+            key_ref: false,
+            cert: MtcCertDescriptor {
+                ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x02],
+                serial: ent_serial,
+                mtc_proof: ent_proof_tls.clone(),
+                not_before: 1_700_000_000,
+                not_after: 1_800_000_000,
+                firmware_version: Some(0),
+            },
+        };
+        let expected_ent_root_hash =
+            compute_mtc_root_hash::<Sha<TestEnv>>(&ent_mtc.cert, &ent_pk_bytes, &aaguid).unwrap();
+        env.persist()
+            .set_attestation(
+                AttestationId::Enterprise,
+                Some(&Attestation {
+                    wrapped_private_key: ent_sk_bytes,
+                    certificate: ent_mtc.to_bytes().unwrap(),
+                }),
+            )
+            .unwrap();
+        storage::enable_enterprise_attestation(&mut env).unwrap();
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        // Verify both Batch and Enterprise keys coexist and "ep": true is advertised in GetInfo.
+        match ctap_state.process_get_info(&mut env).unwrap() {
+            ResponseData::AuthenticatorGetInfo(info) => {
+                assert!(
+                    info.options
+                        .unwrap()
+                        .contains(&(String::from("ep"), true))
+                );
+            }
+            _ => panic!("Expected AuthenticatorGetInfo"),
+        }
+
+        // Case A: Non-Enterprise MakeCredential (0x0A omitted) -> uses AttestationId::Batch ("mtc")
+        //         and emits compact 2-field `mtcKeyRef` (`{ caId, serial }`) on the wire!
+        let non_ent_params = create_minimal_make_credential_parameters();
+        match ctap_state
+            .process_make_credential(&mut env, non_ent_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.fmt, "mtc");
+                assert_eq!(r.ep_att, None);
+                assert!(r.att_stmt.x5c.is_none());
+                assert!(r.att_stmt.pub_key.is_none());
+                let wire_cert = r.att_stmt.mtc_cert.unwrap();
+                assert!(wire_cert.is_key_ref());
+                assert_eq!(wire_cert.serial, batch_serial);
+                assert_eq!(
+                    cbor::Value::from(wire_cert),
+                    cbor_map_options! {
+                        "caId" => vec![0x83u8, 0x99, 0x3f, 0x01, 0x01],
+                        "serial" => batch_serial,
+                    }
+                );
+                assert_eq!(r.auth_data[32] & ED_FLAG, 0);
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+
+        // Case B: Enterprise MakeCredential (0x0A = 1) with 0x0B omitted (None) or empty (Some(vec![]))
+        //         when certificate fits in 7,609 B -> uses Tier 1 logic to return fmt="packed" with x5c!
+        //         Unsolicited extension data is NOT emitted when mtc-debug is not requested.
+        for pref in [None, Some(Vec::new())] {
+            let mut ent_default_params = create_minimal_make_credential_parameters();
+            ent_default_params.enterprise_attestation = Some(1);
+            ent_default_params.attestation_formats_preference = pref;
+            match ctap_state
+                .process_make_credential(&mut env, ent_default_params, DUMMY_CHANNEL)
+                .unwrap()
+            {
+                ResponseData::AuthenticatorMakeCredential(r) => {
+                    assert_eq!(r.fmt, "packed");
+                    assert_eq!(r.ep_att, Some(true));
+                    assert_eq!(r.att_stmt.x5c, Some(vec![ent_x509_der.clone()]));
+                    assert!(r.att_stmt.pub_key.is_none());
+                    assert!(r.att_stmt.mtc_cert.is_none());
+                    assert_eq!(r.auth_data[32] & ED_FLAG, 0);
+                }
+                _ => panic!("Expected AuthenticatorMakeCredential"),
+            }
+        }
+
+        // Case C: Enterprise MakeCredential (0x0A = 1) with "mtc" first in 0x0B and "mtc-debug": true ->
+        //         returns fmt="mtc" (with attStmt.pubKey omitted), full 17-hash `mtcEntryDesc`, and signed
+        //         7-field "mtc-debug" extension (including `deviceSerial: "123456"` and `rootHash`).
+        let mut ent_mtc_params = create_minimal_make_credential_parameters();
+        ent_mtc_params.enterprise_attestation = Some(1);
+        ent_mtc_params.extensions.mtc_debug = true;
+        ent_mtc_params.attestation_formats_preference =
+            Some(vec![String::from("mtc"), String::from("packed")]);
+        match ctap_state
+            .process_make_credential(&mut env, ent_mtc_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.fmt, "mtc");
+                assert_eq!(r.ep_att, Some(true));
+                assert!(r.att_stmt.x5c.is_none());
+                assert!(r.att_stmt.pub_key.is_none());
+                let cert = r.att_stmt.mtc_cert.clone().unwrap();
+                assert!(!cert.is_key_ref());
+                assert_eq!(cert.serial, ent_serial);
+                assert_eq!(cert.mtc_proof, ent_proof_tls);
+                // ED_FLAG (0x80) must be set on authData flags because "mtc-debug" was requested!
+                assert_ne!(r.auth_data[32] & ED_FLAG, 0);
+                let mut expected_ext_bytes = Vec::new();
+                cbor_write(
+                    cbor_map_options! {
+                        "mtc-debug" => cbor_map_options! {
+                            "pubKey" => ent_pk_bytes.clone(),
+                            "mtcProof" => ent_proof_tls.clone(),
+                            "notAfter" => 1_800_000_000u64,
+                            "rootHash" => expected_ent_root_hash.to_vec(),
+                            "notBefore" => 1_700_000_000u64,
+                            "deviceSerial" => "123456",
+                            "firmwareVersion" => 0u64,
+                        },
+                    },
+                    &mut expected_ext_bytes,
+                )
+                .unwrap();
+                assert!(
+                    r.auth_data.ends_with(&expected_ext_bytes),
+                    "authData extensions did not match expected 7-field mtc-debug map"
+                );
+
+                // Verify offline Enterprise MTC verification using "mtc-debug" when `batch_keys` is empty!
+                let ent_trust_anchor = MtcTrustAnchor {
+                    ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x02],
+                    log_number: (ent_serial >> 48) as u16,
+                    trusted_subtrees: vec![MtcSubtree {
+                        start: 0,
+                        end: 131_072,
+                        subtree_hash: expected_ent_root_hash,
+                    }],
+                    revoked_serial_ranges: Vec::new(),
+                    batch_keys: Vec::new(),
+                };
+                let resolved_ent_pk = verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(
+                    &r.fmt,
+                    r.att_stmt.pub_key.as_deref(),
+                    &cert,
+                    &r.auth_data,
+                    &ent_trust_anchor,
+                    1_750_000_000,
+                )
+                .unwrap();
+                assert_eq!(resolved_ent_pk, ent_pk_bytes);
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+
+        // Case D: Enterprise MakeCredential (0x0A = 1) with "packed" FIRST in 0x0B -> returns fmt="packed"
+        //         with the per-enterprise-batch-key X.509 certificate (x5c)!
+        let mut ent_packed_params = create_minimal_make_credential_parameters();
+        ent_packed_params.enterprise_attestation = Some(1);
+        ent_packed_params.attestation_formats_preference =
+            Some(vec![String::from("packed"), String::from("mtc")]);
+        match ctap_state
+            .process_make_credential(&mut env, ent_packed_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.fmt, "packed");
+                assert_eq!(r.ep_att, Some(true));
+                assert_eq!(r.att_stmt.x5c, Some(vec![ent_x509_der]));
+                assert!(r.att_stmt.pub_key.is_none());
+                assert!(r.att_stmt.mtc_cert.is_none());
+                assert_eq!(r.auth_data[32] & ED_FLAG, 0);
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+
+        // Case E: Enterprise MakeCredential (0x0A = 1) with 0x0B omitted/empty when x5c is too large
+        //         for the 7,609 B response budget -> automatically cascades from Tier 1 ("packed") to
+        //         Tier 2 ("mtc") with mtcCert (and pubKey omitted on wire)!
+        let large_ent_mtc = ProvisionedMtcAttestation {
+            format: MtcAttestationFormat::Mtc,
+            x5c: Some(vec![0x30; 5500]),
+            classical_key: None,
+            classical_x5c: None,
+            key_ref: false,
+            cert: MtcCertDescriptor {
+                ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x02],
+                serial: ent_serial,
+                mtc_proof: vec![0x22; 17 * 32],
+                not_before: 1_700_000_000,
+                not_after: 1_800_000_000,
+                firmware_version: None,
+            },
+        };
+        let mut ent_sk_bytes_2 = Vec::new();
+        cbor_write(ent_att_key.to_cbor(), &mut ent_sk_bytes_2).unwrap();
+        env.persist()
+            .set_attestation(AttestationId::Enterprise, None)
+            .unwrap();
+        env.persist()
+            .set_attestation(
+                AttestationId::Enterprise,
+                Some(&Attestation {
+                    wrapped_private_key: ent_sk_bytes_2,
+                    certificate: large_ent_mtc.to_bytes().unwrap(),
+                }),
+            )
+            .unwrap();
+        for pref in [None, Some(Vec::new())] {
+            let mut ent_cascade_params = create_minimal_make_credential_parameters();
+            ent_cascade_params.enterprise_attestation = Some(1);
+            ent_cascade_params.attestation_formats_preference = pref;
+            match ctap_state
+                .process_make_credential(&mut env, ent_cascade_params, DUMMY_CHANNEL)
+                .unwrap()
+            {
+                ResponseData::AuthenticatorMakeCredential(r) => {
+                    assert_eq!(r.fmt, "mtc");
+                    assert_eq!(r.ep_att, Some(true));
+                    assert!(r.att_stmt.x5c.is_none());
+                    assert!(r.att_stmt.pub_key.is_none());
+                    assert_eq!(r.att_stmt.mtc_cert.unwrap().serial, ent_serial);
+                }
+                _ => panic!("Expected AuthenticatorMakeCredential"),
+            }
+        }
+
+        // Case F: VendorFacilitated (0x0A = 1) with non-allowlisted RP ID falls back to non-Enterprise
+        // batch attestation (ep_att = None), while PlatformManaged (0x0A = 2) succeeds for any RP ID.
+        // Also verify that if mtc-debug is requested when ep_att = None, `deviceSerial` is OMITTED while
+        // the remaining 6 fields (`pubKey`, `mtcProof`, `notAfter`, `rootHash`, `notBefore`, `firmwareVersion`)
+        // are still populated in `"mtc-debug"` even though `attStmt.mtcCert` on the wire is a 2-field `mtcKeyRef`!
+        let mut wrong_rp_params = create_minimal_make_credential_parameters();
+        wrong_rp_params.rp.rp_id = String::from("wrong-rp.example.org");
+        wrong_rp_params.enterprise_attestation = Some(1);
+        wrong_rp_params.extensions.mtc_debug = true;
+        match ctap_state
+            .process_make_credential(&mut env, wrong_rp_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.fmt, "mtc");
+                assert_eq!(r.ep_att, None);
+                assert!(r.att_stmt.mtc_cert.as_ref().unwrap().is_key_ref());
+                let mut expected_non_ent_debug = Vec::new();
+                cbor_write(
+                    cbor_map_options! {
+                        "mtc-debug" => cbor_map_options! {
+                            "pubKey" => batch_pk_bytes.clone(),
+                            "mtcProof" => batch_proof_tls,
+                            "notAfter" => MTC_NON_EXPIRING_NOT_AFTER,
+                            "rootHash" => expected_batch_root_hash.to_vec(),
+                            "notBefore" => 1_700_000_000u64,
+                            "firmwareVersion" => 0u64,
+                        },
+                    },
+                    &mut expected_non_ent_debug,
+                )
+                .unwrap();
+                assert!(
+                    r.auth_data.ends_with(&expected_non_ent_debug),
+                    "Fallback non-enterprise registration with mtc-debug must include 6 fields and omit deviceSerial"
+                );
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+
+        let mut fido_ep_params = create_minimal_make_credential_parameters();
+        fido_ep_params.rp.rp_id = String::from("enterprisetest.certinfra.fidoalliance.org");
+        fido_ep_params.enterprise_attestation = Some(1);
+        match ctap_state
+            .process_make_credential(&mut env, fido_ep_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.ep_att, Some(true));
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "mldsa")]
+    fn test_second_non_enterprise_batch_x509_on_non_mldsa_make_credential() {
+        use crate::ctap::mtc::{
+            MtcAttestationFormat, MtcCertDescriptor, ProvisionedMtcAttestation,
+        };
+
+        let mut env = TestEnv::default();
+        let aaguid = [0xBB; 16];
+        env.persist().set_aaguid(&aaguid).unwrap();
+
+        // 1. Primary Non-Enterprise PQ Batch Key (ML-DSA-44) + PQ X.509 cert + MTC descriptor
+        let pq_batch_key = PrivateKey::<TestEnv>::new(&mut env, SignatureAlgorithm::MlDsa44);
+        let mut pq_sk_bytes = Vec::new();
+        cbor_write(pq_batch_key.to_cbor(), &mut pq_sk_bytes).unwrap();
+        let pq_x509_der = vec![0x30, 0x82, 0x04, 0x00, 0xAA, 0xBB];
+
+        // 2. Second Non-Enterprise Classical Batch Key (ES256) + ES256 X.509 cert (signed by ES384 root)
+        let classical_batch_key = PrivateKey::<TestEnv>::new_ecdsa(&mut env);
+        let classical_sk_bytes = classical_batch_key.export(); // 32-byte P-256 scalar
+        let classical_x509_der = vec![0x30, 0x82, 0x02, 0x00, 0xCC, 0xDD];
+
+        let batch_mtc = ProvisionedMtcAttestation {
+            format: MtcAttestationFormat::Mtc,
+            x5c: Some(pq_x509_der.clone()),
+            classical_key: Some(classical_sk_bytes),
+            classical_x5c: Some(classical_x509_der.clone()),
+            key_ref: true,
+            cert: MtcCertDescriptor {
+                ca_id: vec![0x83, 0x99, 0x3f, 0x01, 0x01],
+                serial: 0x0007_0000_0000_0000,
+                mtc_proof: vec![0x11; 96],
+                not_before: 1_700_000_000,
+                not_after: 1_800_000_000,
+                firmware_version: None,
+            },
+        };
+        env.persist()
+            .set_attestation(
+                AttestationId::Batch,
+                Some(&Attestation {
+                    wrapped_private_key: pq_sk_bytes,
+                    certificate: batch_mtc.to_bytes().unwrap(),
+                }),
+            )
+            .unwrap();
+
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        // Case 1: Non-ML-DSA MakeCredential (ES256, EdDSA, ES384) -> uses second non-enterprise
+        //         classical batch key (alg = -7 / ES256) and classical X.509 certificate!
+        for cred_alg in [
+            SignatureAlgorithm::Es256,
+            #[cfg(feature = "ed25519")]
+            SignatureAlgorithm::Eddsa,
+            #[cfg(feature = "es384")]
+            SignatureAlgorithm::Es384,
+        ] {
+            let mut params = create_minimal_make_credential_parameters();
+            params.user.user_id = vec![cred_alg as i64 as u8; 16];
+            params.pub_key_cred_params = vec![PublicKeyCredentialParameter {
+                cred_type: PublicKeyCredentialType::PublicKey,
+                alg: cred_alg,
+            }];
+            match ctap_state
+                .process_make_credential(&mut env, params, DUMMY_CHANNEL)
+                .unwrap()
+            {
+                ResponseData::AuthenticatorMakeCredential(r) => {
+                    assert_eq!(r.fmt, "packed");
+                    assert_eq!(r.att_stmt.alg, SignatureAlgorithm::Es256 as i64);
+                    assert_eq!(r.att_stmt.x5c, Some(vec![classical_x509_der.clone()]));
+                    assert!(r.att_stmt.pub_key.is_none());
+                    assert!(r.att_stmt.mtc_cert.is_none());
+                }
+                _ => panic!("Expected AuthenticatorMakeCredential"),
+            }
+        }
+
+        // Case 2: ML-DSA MakeCredential (ML-DSA-44) -> uses primary PQ batch key (alg = -48) and PQ X.509 cert!
+        let mut pq_params = create_minimal_make_credential_parameters();
+        pq_params.user.user_id = vec![0x99; 16];
+        pq_params.pub_key_cred_params = vec![PublicKeyCredentialParameter {
+            cred_type: PublicKeyCredentialType::PublicKey,
+            alg: SignatureAlgorithm::MlDsa44,
+        }];
+        match ctap_state
+            .process_make_credential(&mut env, pq_params, DUMMY_CHANNEL)
+            .unwrap()
+        {
+            ResponseData::AuthenticatorMakeCredential(r) => {
+                assert_eq!(r.fmt, "packed");
+                assert_eq!(r.att_stmt.alg, SignatureAlgorithm::MlDsa44 as i64);
+                assert_eq!(r.att_stmt.x5c, Some(vec![pq_x509_der]));
+                assert!(r.att_stmt.pub_key.is_none());
+                assert!(r.att_stmt.mtc_cert.is_none());
+            }
+            _ => panic!("Expected AuthenticatorMakeCredential"),
+        }
+    }
+
+    #[test]
+    fn test_persistent_pin_uv_auth_token_and_encrypted_get_info() {
+        use aes::cipher::generic_array::GenericArray;
+        use aes::cipher::{BlockDecryptMut, KeyIvInit};
+        use crate::ctap::data_formats::CredentialManagementSubCommandParameters;
+
+        fn decrypt_with_ppuat(ppuat: &[u8], info: &[u8], iv_and_ct: &[u8]) -> [u8; 16] {
+            assert_eq!(iv_and_ct.len(), 32);
+            let mut okm = [0u8; 32];
+            Hkdf::<TestEnv>::hkdf_empty_salt_256(ppuat, info, &mut okm);
+            let aes_key = &okm[..16];
+            let iv = &iv_and_ct[..16];
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&iv_and_ct[16..32]);
+            let mut decryptor = cbc::Decryptor::<aes::Aes128>::new_from_slices(aes_key, iv).unwrap();
+            decryptor.decrypt_block_mut(GenericArray::from_mut_slice(&mut block));
+            block
+        }
+
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::<TestEnv>::new(&mut env);
+
+        // 1. Set initial PIN ("1234").
+        let mut pin = [0u8; 64];
+        pin[..4].copy_from_slice(b"1234");
+        let mut pin_hash = [0u8; 16];
+        pin_hash.copy_from_slice(&Sha::<TestEnv>::digest(&pin[..])[..16]);
+        env.persist().set_pin(&pin_hash, 4).unwrap();
+
+        // 2. Request persistentPinUvAuthToken with pcmr (0x40) and permissions_rp_id.
+        let platform_pin_protocol = PinProtocol::<TestEnv>::new(&mut env);
+        let platform_cose_key = platform_pin_protocol.get_public_key();
+        let ka_resp = ctap_state
+            .client_pin
+            .process_command(
+                &mut env,
+                AuthenticatorClientPinParameters {
+                    pin_uv_auth_protocol: PinUvAuthProtocol::V2,
+                    sub_command: ClientPinSubCommand::GetKeyAgreement,
+                    key_agreement: None,
+                    pin_uv_auth_param: None,
+                    new_pin_enc: None,
+                    pin_hash_enc: None,
+                    permissions: None,
+                    permissions_rp_id: None,
+                },
+                DUMMY_CHANNEL,
+            )
+            .unwrap();
+        let authr_cose_key = match ka_resp {
+            ResponseData::AuthenticatorClientPin(Some(r)) => r.key_agreement.unwrap(),
+            _ => panic!("Expected AuthenticatorClientPin"),
+        };
+        let shared_secret = platform_pin_protocol
+            .decapsulate(authr_cose_key, PinUvAuthProtocol::V2)
+            .unwrap();
+        let pin_hash_enc = shared_secret.encrypt(&mut env, &pin_hash).unwrap();
+        let pcmr_resp = ctap_state
+            .client_pin
+            .process_command(
+                &mut env,
+                AuthenticatorClientPinParameters {
+                    pin_uv_auth_protocol: PinUvAuthProtocol::V2,
+                    sub_command: ClientPinSubCommand::GetPinUvAuthTokenUsingPinWithPermissions,
+                    key_agreement: Some(platform_cose_key.clone()),
+                    pin_uv_auth_param: None,
+                    new_pin_enc: None,
+                    pin_hash_enc: Some(pin_hash_enc),
+                    permissions: Some(0x40),
+                    permissions_rp_id: Some(String::from("example.com")),
+                },
+                DUMMY_CHANNEL,
+            )
+            .unwrap();
+        let encrypted_ppuat = match pcmr_resp {
+            ResponseData::AuthenticatorClientPin(Some(r)) => r.pin_uv_auth_token.unwrap(),
+            _ => panic!("Expected AuthenticatorClientPin"),
+        };
+        let ppuat_vec = shared_secret
+            .decrypt(&encrypted_ppuat)
+            .unwrap()
+            .expose_secret_to_vec();
+        assert_eq!(ppuat_vec.len(), 32);
+        let ppuat = *arrayref::array_ref![ppuat_vec, 0, 32];
+
+        // 3. Call GetInfo twice: verify IVs change while decrypted encIdentifier & encCredStoreState stay identical.
+        let info1 = match ctap_state.process_get_info(&mut env).unwrap() {
+            ResponseData::AuthenticatorGetInfo(r) => r,
+            _ => panic!("Expected AuthenticatorGetInfo"),
+        };
+        let info2 = match ctap_state.process_get_info(&mut env).unwrap() {
+            ResponseData::AuthenticatorGetInfo(r) => r,
+            _ => panic!("Expected AuthenticatorGetInfo"),
+        };
+        let enc_id_1 = info1.enc_identifier.unwrap();
+        let enc_id_2 = info2.enc_identifier.unwrap();
+        assert_ne!(&enc_id_1[..16], &enc_id_2[..16]);
+        let dec_id_1 = decrypt_with_ppuat(&ppuat, b"encIdentifier", &enc_id_1);
+        let dec_id_2 = decrypt_with_ppuat(&ppuat, b"encIdentifier", &enc_id_2);
+        assert_eq!(dec_id_1, dec_id_2);
+
+        let enc_state_1 = info1.enc_cred_store_state.unwrap();
+        let enc_state_2 = info2.enc_cred_store_state.unwrap();
+        assert_ne!(&enc_state_1[..16], &enc_state_2[..16]);
+        let dec_state_1 = decrypt_with_ppuat(&ppuat, b"encCredStoreState", &enc_state_1);
+        let dec_state_2 = decrypt_with_ppuat(&ppuat, b"encCredStoreState", &enc_state_2);
+        assert_eq!(dec_state_1, dec_state_2);
+
+        // 4. Create a discoverable credential and verify encCredStoreState rotates.
+        let pin_hash_enc_mc = shared_secret.encrypt(&mut env, &pin_hash).unwrap();
+        let mc_token_resp = ctap_state
+            .client_pin
+            .process_command(
+                &mut env,
+                AuthenticatorClientPinParameters {
+                    pin_uv_auth_protocol: PinUvAuthProtocol::V2,
+                    sub_command: ClientPinSubCommand::GetPinToken,
+                    key_agreement: Some(platform_cose_key.clone()),
+                    pin_uv_auth_param: None,
+                    new_pin_enc: None,
+                    pin_hash_enc: Some(pin_hash_enc_mc),
+                    permissions: None,
+                    permissions_rp_id: None,
+                },
+                DUMMY_CHANNEL,
+            )
+            .unwrap();
+        let enc_session_token = match mc_token_resp {
+            ResponseData::AuthenticatorClientPin(Some(r)) => r.pin_uv_auth_token.unwrap(),
+            _ => panic!("Expected AuthenticatorClientPin"),
+        };
+        let session_token_vec = shared_secret
+            .decrypt(&enc_session_token)
+            .unwrap()
+            .expose_secret_to_vec();
+        let session_token = *arrayref::array_ref![session_token_vec, 0, 32];
+        let mut rk_params = create_minimal_make_credential_parameters();
+        rk_params.pin_uv_auth_protocol = Some(PinUvAuthProtocol::V2);
+        rk_params.pin_uv_auth_param = Some(authenticate_pin_uv_auth_token(
+            &session_token,
+            &rk_params.client_data_hash,
+            PinUvAuthProtocol::V2,
+        ));
+        assert!(
+            ctap_state
+                .process_make_credential(&mut env, rk_params, DUMMY_CHANNEL)
+                .is_ok()
+        );
+        let info3 = match ctap_state.process_get_info(&mut env).unwrap() {
+            ResponseData::AuthenticatorGetInfo(r) => r,
+            _ => panic!("Expected AuthenticatorGetInfo"),
+        };
+        let enc_state_3 = info3.enc_cred_store_state.unwrap();
+        assert_ne!(&enc_state_2[16..], &enc_state_3[16..]);
+        let dec_state_3 = decrypt_with_ppuat(&ppuat, b"encCredStoreState", &enc_state_3);
+        assert_ne!(dec_state_2, dec_state_3);
+
+        // 5. Authenticate read-only CredentialManagement subcommands using persistentPinUvAuthToken.
+        for sub_command in [
+            CredentialManagementSubCommand::GetCredsMetadata,
+            CredentialManagementSubCommand::EnumerateRpsBegin,
+        ] {
+            let msg = [sub_command as u8];
+            let auth_param =
+                authenticate_pin_uv_auth_token(&ppuat, &msg, PinUvAuthProtocol::V2);
+            let cm_resp = ctap_state.process_parsed_command(
+                &mut env,
+                Command::AuthenticatorCredentialManagement(
+                    AuthenticatorCredentialManagementParameters {
+                        sub_command,
+                        sub_command_params: None,
+                        pin_uv_auth_protocol: Some(PinUvAuthProtocol::V2),
+                        pin_uv_auth_param: Some(auth_param),
+                    },
+                ),
+                DUMMY_CHANNEL,
+            );
+            assert!(cm_resp.is_ok());
+        }
+
+        let rp_id_hash = Sha::<TestEnv>::digest(b"example.com").to_vec();
+        let sub_params = CredentialManagementSubCommandParameters {
+            rp_id_hash: Some(rp_id_hash),
+            credential_id: None,
+            user: None,
+        };
+        let mut enum_cred_msg = vec![CredentialManagementSubCommand::EnumerateCredentialsBegin as u8];
+        cbor_write(sub_params.clone().into(), &mut enum_cred_msg).unwrap();
+        let enum_cred_auth =
+            authenticate_pin_uv_auth_token(&ppuat, &enum_cred_msg, PinUvAuthProtocol::V2);
+        let enum_cred_resp = ctap_state.process_parsed_command(
+            &mut env,
+            Command::AuthenticatorCredentialManagement(
+                AuthenticatorCredentialManagementParameters {
+                    sub_command: CredentialManagementSubCommand::EnumerateCredentialsBegin,
+                    sub_command_params: Some(sub_params),
+                    pin_uv_auth_protocol: Some(PinUvAuthProtocol::V2),
+                    pin_uv_auth_param: Some(enum_cred_auth),
+                },
+            ),
+            DUMMY_CHANNEL,
+        );
+        assert!(enum_cred_resp.is_ok());
+
+        // 6. Change PIN and verify old persistentPinUvAuthToken is invalidated (CTAP2_ERR_PIN_AUTH_INVALID).
+        let mut new_padded_pin = [0u8; 64];
+        new_padded_pin[..4].copy_from_slice(b"5678");
+        let new_pin_enc = shared_secret.encrypt(&mut env, &new_padded_pin).unwrap();
+        let curr_pin_hash_enc = shared_secret.encrypt(&mut env, &pin_hash).unwrap();
+        let mut change_pin_auth_data = new_pin_enc.clone();
+        change_pin_auth_data.extend_from_slice(&curr_pin_hash_enc);
+        let change_pin_auth_param = shared_secret.authenticate(&change_pin_auth_data);
+        assert!(
+            ctap_state
+                .client_pin
+                .process_command(
+                    &mut env,
+                    AuthenticatorClientPinParameters {
+                        pin_uv_auth_protocol: PinUvAuthProtocol::V2,
+                        sub_command: ClientPinSubCommand::ChangePin,
+                        key_agreement: Some(platform_cose_key),
+                        pin_uv_auth_param: Some(change_pin_auth_param),
+                        new_pin_enc: Some(new_pin_enc),
+                        pin_hash_enc: Some(curr_pin_hash_enc),
+                        permissions: None,
+                        permissions_rp_id: None,
+                    },
+                    DUMMY_CHANNEL,
+                )
+                .is_ok()
+        );
+
+        let old_auth_param = authenticate_pin_uv_auth_token(
+            &ppuat,
+            &[CredentialManagementSubCommand::EnumerateRpsBegin as u8],
+            PinUvAuthProtocol::V2,
+        );
+        let post_change_resp = ctap_state.process_parsed_command(
+            &mut env,
+            Command::AuthenticatorCredentialManagement(
+                AuthenticatorCredentialManagementParameters {
+                    sub_command: CredentialManagementSubCommand::EnumerateRpsBegin,
+                    sub_command_params: None,
+                    pin_uv_auth_protocol: Some(PinUvAuthProtocol::V2),
+                    pin_uv_auth_param: Some(old_auth_param),
+                },
+            ),
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            post_change_resp,
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
+        );
+    }
 }
+

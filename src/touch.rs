@@ -33,6 +33,12 @@ impl Touch {
     }
 
     pub(crate) fn is_present(&self) -> bool {
+        #[cfg(feature = "up-always-true")]
+        {
+            let _ = &self.touched;
+            true
+        }
+        #[cfg(not(feature = "up-always-true"))]
         self.touched.load(Relaxed)
     }
 }

@@ -40,8 +40,10 @@ pub(crate) fn recv(packet: &mut [u8; 64], timeout_ms: Option<usize>) -> CtapResu
     let timeout = timeout_ms.map(Timeout::new_ms);
     let timeout_is_over = || timeout.as_ref().is_some_and(Timeout::is_over);
     loop {
-        if ctap::read(packet).map_err(convert_error)? {
-            return Ok(RecvStatus::Received(UsbEndpoint::MainHid));
+        match ctap::read(packet) {
+            Ok(true) => return Ok(RecvStatus::Received(UsbEndpoint::MainHid)),
+            Ok(false) => (),
+            Err(_) => (),
         }
         if timeout_is_over() {
             return Ok(RecvStatus::Timeout);

@@ -10,11 +10,11 @@ All the generated certificates and private keys are stored in the directory
 | File                     | Purpose                                         |
 | ------------------------ | ----------------------------------------------- |
 | `aaguid.txt`             | Text file containaing the AAGUID value          |
-| `opensk_cert.pem`        | PEM encoded certificate for the authenticator   |
-| `opensk.key`             | ECC secp256r1 private key for the autenticator  |
+| `fidont_cert.pem`        | PEM encoded certificate for the authenticator   |
+| `fidont.key`             | ECC secp256r1 private key for the autenticator  |
 
 If you want to use your own attestation certificate and private key,
-replace the `opensk_cert.pem` and `opensk.key` files. The script at
+replace the `fidont_cert.pem` and `fidont.key` files. The script at
 `tools/configure.py` customizes an OpenSK device with the correct certificate
 and private key.
 
@@ -56,8 +56,8 @@ To inject your own batch attestation key and AAGUID into the firmware, run:
 ```sh
 # Read the privacy warning above!
 uv run tools/configure.py \
-    --certificate=crypto_data/opensk_cert.pem \
-    --private-key=crypto_data/opensk.key \
+    --certificate=crypto_data/fidont_cert.pem \
+    --private-key=crypto_data/fidont.key \
     --aaguid=crypto_data/aaguid.txt
 ```
 

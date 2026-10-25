@@ -32,6 +32,7 @@ mod write;
 pub(crate) fn init() -> WasefireEnv {
     WasefireEnv {
         customization: DEFAULT_CUSTOMIZATION,
+        rng: rng::init(),
         user_presence: user_presence::init(),
         #[cfg(feature = "fingerprint")]
         fingerprint: fingerprint::init(),
@@ -40,13 +41,14 @@ pub(crate) fn init() -> WasefireEnv {
 
 pub(crate) struct WasefireEnv {
     customization: CustomizationImpl,
+    rng: rng::HmacDrbg,
     user_presence: user_presence::Impl,
     #[cfg(feature = "fingerprint")]
     fingerprint: fingerprint::Impl,
 }
 
 impl Env for WasefireEnv {
-    type Rng = Self;
+    type Rng = rng::HmacDrbg;
     type UserPresence = user_presence::Impl;
     type Persist = Self;
     type KeyStore = Self;
@@ -59,7 +61,7 @@ impl Env for WasefireEnv {
     type Fingerprint = fingerprint::Impl;
 
     fn rng(&mut self) -> &mut Self::Rng {
-        self
+        &mut self.rng
     }
 
     fn user_presence(&mut self) -> &mut Self::UserPresence {

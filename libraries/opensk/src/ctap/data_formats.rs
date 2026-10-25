@@ -32,10 +32,68 @@ use enum_iterator::IntoEnumIterator;
 use sk_cbor as cbor;
 use sk_cbor::{cbor_array_vec, cbor_map_options, destructure_cbor_map};
 
+/// Helper to format byte slices in debug output with a truncated preview when
+/// `suppress_crypto_bytes` is enabled.
+#[derive(Clone, Copy)]
+pub struct TruncatedBytes<'a>(pub &'a [u8]);
+
+impl core::fmt::Debug for TruncatedBytes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        #[cfg(feature = "suppress_crypto_bytes")]
+        {
+            const LIMIT: usize = 16;
+            const PREVIEW: usize = 8;
+            if self.0.len() > LIMIT {
+                write!(f, "[")?;
+                for (i, b) in self.0[..PREVIEW].iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{b:02x}")?;
+                }
+                return write!(f, ", .. ({} bytes)]", self.0.len());
+            }
+        }
+        write!(f, "{:02x?}", self.0)
+    }
+}
+
 // Used as the identifier for ECDSA in assertion signatures and COSE.
 pub const ES256_ALGORITHM: i64 = -7;
 #[cfg(any(test, feature = "ed25519"))]
 pub const EDDSA_ALGORITHM: i64 = -8;
+#[cfg(any(test, feature = "es384"))]
+pub const ES384_ALGORITHM: i64 = -35;
+#[cfg(any(test, feature = "es512"))]
+pub const ES512_ALGORITHM: i64 = -36;
+#[cfg(any(test, feature = "es256k"))]
+pub const ES256K_ALGORITHM: i64 = -47;
+#[cfg(any(test, feature = "mldsa"))]
+pub const ML_DSA_44_ALGORITHM: i64 = -48;
+#[cfg(any(test, feature = "mldsa"))]
+pub const ML_DSA_65_ALGORITHM: i64 = -49;
+#[cfg(any(test, feature = "mldsa"))]
+pub const ML_DSA_87_ALGORITHM: i64 = -50;
+#[cfg(any(test, feature = "ed448"))]
+pub const ED448_ALGORITHM: i64 = -53;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_44_ES256_ALGORITHM: i64 = -54;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_65_ES256_ALGORITHM: i64 = -55;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_87_ES384_ALGORITHM: i64 = -56;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_44_ED25519_ALGORITHM: i64 = -57;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_65_ED25519_ALGORITHM: i64 = -58;
+#[cfg(any(test, feature = "pq_composite"))]
+pub const ML_DSA_87_ED448_ALGORITHM: i64 = -59;
+#[cfg(any(test, feature = "fndsa"))]
+pub const FN_DSA_512_ALGORITHM: i64 = -60;
+#[cfg(any(test, feature = "fndsa"))]
+pub const FN_DSA_1024_ALGORITHM: i64 = -61;
+#[cfg(any(test, feature = "rs256"))]
+pub const RS256_ALGORITHM: i64 = -257;
 
 // https://www.w3.org/TR/webauthn/#dictdef-publickeycredentialrpentity
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,12 +292,22 @@ impl TryFrom<cbor::Value> for AuthenticatorTransport {
 }
 
 // https://www.w3.org/TR/webauthn/#dictdef-publickeycredentialdescriptor
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct PublicKeyCredentialDescriptor {
     pub key_type: PublicKeyCredentialType,
     pub key_id: Vec<u8>,
     pub transports: Option<Vec<AuthenticatorTransport>>,
+}
+
+impl core::fmt::Debug for PublicKeyCredentialDescriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PublicKeyCredentialDescriptor")
+            .field("key_type", &self.key_type)
+            .field("key_id", &TruncatedBytes(&self.key_id))
+            .field("transports", &self.transports)
+            .finish()
+    }
 }
 
 impl TryFrom<cbor::Value> for PublicKeyCredentialDescriptor {
@@ -290,10 +358,13 @@ impl From<PublicKeyCredentialDescriptor> for cbor::Value {
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct MakeCredentialExtensions {
     pub hmac_secret: bool,
+    pub hmac_secret_mc: Option<GetAssertionHmacSecretInput>,
     pub cred_protect: Option<CredentialProtectionPolicy>,
     pub min_pin_length: bool,
     pub cred_blob: Option<Vec<u8>>,
     pub large_blob_key: Option<bool>,
+    pub third_party_payment: bool,
+    pub mtc_debug: bool,
 }
 
 impl TryFrom<cbor::Value> for MakeCredentialExtensions {
@@ -303,20 +374,31 @@ impl TryFrom<cbor::Value> for MakeCredentialExtensions {
         destructure_cbor_map! {
             let {
                 "credBlob" => cred_blob,
+                "mtc-debug" => mtc_debug,
                 "credProtect" => cred_protect,
                 "hmac-secret" => hmac_secret,
                 "largeBlobKey" => large_blob_key,
                 "minPinLength" => min_pin_length,
+                "hmac-secret-mc" => hmac_secret_mc,
+                "thirdPartyPayment" => third_party_payment,
             } = extract_map(cbor_value)?;
         }
 
         let hmac_secret = hmac_secret.map_or(Ok(false), extract_bool)?;
+        let hmac_secret_mc = hmac_secret_mc
+            .map(GetAssertionHmacSecretInput::try_from)
+            .transpose()?;
+        if hmac_secret_mc.is_some() && !hmac_secret {
+            return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
+        }
         let cred_protect = cred_protect
             .map(CredentialProtectionPolicy::try_from)
             .transpose()?;
         let min_pin_length = min_pin_length.map_or(Ok(false), extract_bool)?;
         let cred_blob = cred_blob.map(extract_byte_string).transpose()?;
         let large_blob_key = large_blob_key.map(extract_bool).transpose()?;
+        let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
+        let mtc_debug = mtc_debug.map_or(Ok(false), extract_bool)?;
         if let Some(large_blob_key) = large_blob_key
             && !large_blob_key
         {
@@ -324,10 +406,13 @@ impl TryFrom<cbor::Value> for MakeCredentialExtensions {
         }
         Ok(Self {
             hmac_secret,
+            hmac_secret_mc,
             cred_protect,
             min_pin_length,
             cred_blob,
             large_blob_key,
+            third_party_payment,
+            mtc_debug,
         })
     }
 }
@@ -338,6 +423,7 @@ pub struct GetAssertionExtensions {
     pub hmac_secret: Option<GetAssertionHmacSecretInput>,
     pub cred_blob: bool,
     pub large_blob_key: Option<bool>,
+    pub third_party_payment: bool,
 }
 
 impl TryFrom<cbor::Value> for GetAssertionExtensions {
@@ -349,6 +435,7 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
                 "credBlob" => cred_blob,
                 "hmac-secret" => hmac_secret,
                 "largeBlobKey" => large_blob_key,
+                "thirdPartyPayment" => third_party_payment,
             } = extract_map(cbor_value)?;
         }
 
@@ -357,6 +444,7 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
             .transpose()?;
         let cred_blob = cred_blob.map_or(Ok(false), extract_bool)?;
         let large_blob_key = large_blob_key.map(extract_bool).transpose()?;
+        let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
         if let Some(large_blob_key) = large_blob_key
             && !large_blob_key
         {
@@ -366,6 +454,7 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
             hmac_secret,
             cred_blob,
             large_blob_key,
+            third_party_payment,
         })
     }
 }
@@ -490,20 +579,52 @@ impl TryFrom<cbor::Value> for GetAssertionOptions {
 }
 
 // https://www.w3.org/TR/webauthn/#packed-attestation
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct PackedAttestationStatement {
     pub alg: i64,
     pub sig: Vec<u8>,
     pub x5c: Option<Vec<Vec<u8>>>,
     pub ecdaa_key_id: Option<Vec<u8>>,
+    pub pub_key: Option<Vec<u8>>,
+    pub mtc_cert: Option<super::mtc::MtcCertDescriptor>,
+}
+
+impl core::fmt::Debug for PackedAttestationStatement {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("PackedAttestationStatement");
+        d.field("alg", &self.alg)
+            .field("sig", &TruncatedBytes(&self.sig));
+        if let Some(x5c) = &self.x5c {
+            d.field("x5c", &format_args!("<{} certs>", x5c.len()));
+        } else {
+            d.field("x5c", &None::<()>);
+        }
+        if let Some(ecdaa) = &self.ecdaa_key_id {
+            d.field("ecdaa_key_id", &TruncatedBytes(ecdaa));
+        } else {
+            d.field("ecdaa_key_id", &None::<()>);
+        }
+        if let Some(pk) = &self.pub_key {
+            d.field("pub_key", &TruncatedBytes(pk));
+        }
+        if let Some(mtc) = &self.mtc_cert {
+            d.field("mtc_cert", mtc);
+        }
+        d.finish()
+    }
 }
 
 impl From<PackedAttestationStatement> for cbor::Value {
     fn from(att_stmt: PackedAttestationStatement) -> Self {
+        if att_stmt.sig.is_empty() {
+            return cbor_map_options! {};
+        }
         cbor_map_options! {
             "alg" => att_stmt.alg,
             "sig" => att_stmt.sig,
             "x5c" => att_stmt.x5c.map(|x| cbor_array_vec!(x)),
+            "pubKey" => att_stmt.pub_key,
+            "mtcCert" => att_stmt.mtc_cert,
             "ecdaaKeyId" => att_stmt.ecdaa_key_id,
         }
     }
@@ -516,9 +637,63 @@ pub enum SignatureAlgorithm {
     Es256 = ES256_ALGORITHM as isize,
     #[cfg(feature = "ed25519")]
     Eddsa = EDDSA_ALGORITHM as isize,
+    #[cfg(feature = "es384")]
+    Es384 = ES384_ALGORITHM as isize,
+    #[cfg(feature = "es512")]
+    Es512 = ES512_ALGORITHM as isize,
+    #[cfg(feature = "es256k")]
+    Es256k = ES256K_ALGORITHM as isize,
+    #[cfg(feature = "mldsa")]
+    MlDsa44 = ML_DSA_44_ALGORITHM as isize,
+    #[cfg(feature = "mldsa")]
+    MlDsa65 = ML_DSA_65_ALGORITHM as isize,
+    #[cfg(feature = "mldsa")]
+    MlDsa87 = ML_DSA_87_ALGORITHM as isize,
+    #[cfg(feature = "ed448")]
+    Ed448 = ED448_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa44Es256 = ML_DSA_44_ES256_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa65Es256 = ML_DSA_65_ES256_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa87Es384 = ML_DSA_87_ES384_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa44Ed25519 = ML_DSA_44_ED25519_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa65Ed25519 = ML_DSA_65_ED25519_ALGORITHM as isize,
+    #[cfg(feature = "pq_composite")]
+    MlDsa87Ed448 = ML_DSA_87_ED448_ALGORITHM as isize,
+    #[cfg(feature = "fndsa")]
+    FnDsa512 = FN_DSA_512_ALGORITHM as isize,
+    #[cfg(feature = "fndsa")]
+    FnDsa1024 = FN_DSA_1024_ALGORITHM as isize,
+    #[cfg(feature = "rs256")]
+    Rs256 = RS256_ALGORITHM as isize,
     // This is the default for all numbers not covered above.
     // Unknown types should be ignored, instead of returning errors.
     Unknown = 0,
+}
+
+impl SignatureAlgorithm {
+    /// Returns true if the credential algorithm is an ML-DSA, FN-DSA, or PQ composite algorithm.
+    pub fn is_mldsa(self) -> bool {
+        match self {
+            #[cfg(feature = "mldsa")]
+            SignatureAlgorithm::MlDsa44
+            | SignatureAlgorithm::MlDsa65
+            | SignatureAlgorithm::MlDsa87 => true,
+            #[cfg(feature = "fndsa")]
+            SignatureAlgorithm::FnDsa512 | SignatureAlgorithm::FnDsa1024 => true,
+            #[cfg(feature = "pq_composite")]
+            SignatureAlgorithm::MlDsa44Es256
+            | SignatureAlgorithm::MlDsa65Es256
+            | SignatureAlgorithm::MlDsa87Es384
+            | SignatureAlgorithm::MlDsa44Ed25519
+            | SignatureAlgorithm::MlDsa65Ed25519
+            | SignatureAlgorithm::MlDsa87Ed448 => true,
+            _ => false,
+        }
+    }
 }
 
 impl From<SignatureAlgorithm> for cbor::Value {
@@ -533,6 +708,38 @@ impl From<i64> for SignatureAlgorithm {
             ES256_ALGORITHM => SignatureAlgorithm::Es256,
             #[cfg(feature = "ed25519")]
             EDDSA_ALGORITHM => SignatureAlgorithm::Eddsa,
+            #[cfg(feature = "es384")]
+            ES384_ALGORITHM => SignatureAlgorithm::Es384,
+            #[cfg(feature = "es512")]
+            ES512_ALGORITHM => SignatureAlgorithm::Es512,
+            #[cfg(feature = "es256k")]
+            ES256K_ALGORITHM => SignatureAlgorithm::Es256k,
+            #[cfg(feature = "mldsa")]
+            ML_DSA_44_ALGORITHM => SignatureAlgorithm::MlDsa44,
+            #[cfg(feature = "mldsa")]
+            ML_DSA_65_ALGORITHM => SignatureAlgorithm::MlDsa65,
+            #[cfg(feature = "mldsa")]
+            ML_DSA_87_ALGORITHM => SignatureAlgorithm::MlDsa87,
+            #[cfg(feature = "ed448")]
+            ED448_ALGORITHM => SignatureAlgorithm::Ed448,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_44_ES256_ALGORITHM => SignatureAlgorithm::MlDsa44Es256,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_65_ES256_ALGORITHM => SignatureAlgorithm::MlDsa65Es256,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_87_ES384_ALGORITHM => SignatureAlgorithm::MlDsa87Es384,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_44_ED25519_ALGORITHM => SignatureAlgorithm::MlDsa44Ed25519,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_65_ED25519_ALGORITHM => SignatureAlgorithm::MlDsa65Ed25519,
+            #[cfg(feature = "pq_composite")]
+            ML_DSA_87_ED448_ALGORITHM => SignatureAlgorithm::MlDsa87Ed448,
+            #[cfg(feature = "fndsa")]
+            FN_DSA_512_ALGORITHM => SignatureAlgorithm::FnDsa512,
+            #[cfg(feature = "fndsa")]
+            FN_DSA_1024_ALGORITHM => SignatureAlgorithm::FnDsa1024,
+            #[cfg(feature = "rs256")]
+            RS256_ALGORITHM => SignatureAlgorithm::Rs256,
             _ => SignatureAlgorithm::Unknown,
         }
     }
@@ -601,6 +808,7 @@ pub struct PublicKeyCredentialSource {
     pub user_icon: Option<String>,
     pub cred_blob: Option<Vec<u8>>,
     pub large_blob_key: Option<Vec<u8>>,
+    pub third_party_payment: bool,
 }
 
 // We serialize credentials for the persistent storage using CBOR maps. Each field of a credential
@@ -617,6 +825,7 @@ enum PublicKeyCredentialSourceField {
     CredBlob = 10,
     LargeBlobKey = 11,
     PrivateKey = 12,
+    ThirdPartyPayment = 13,
     // When a field is removed, its tag should be reserved and not used for new fields. We document
     // those reserved tags below.
     // Reserved tags:
@@ -656,6 +865,7 @@ impl TryFrom<cbor::Value> for PublicKeyCredentialSource {
                 PublicKeyCredentialSourceField::CredBlob => cred_blob,
                 PublicKeyCredentialSourceField::LargeBlobKey => large_blob_key,
                 PublicKeyCredentialSourceField::PrivateKey => wrapped_private_key,
+                PublicKeyCredentialSourceField::ThirdPartyPayment => third_party_payment,
             } = extract_map(cbor_value)?;
         }
 
@@ -672,6 +882,7 @@ impl TryFrom<cbor::Value> for PublicKeyCredentialSource {
         let cred_blob = cred_blob.map(extract_byte_string).transpose()?;
         let large_blob_key = large_blob_key.map(extract_byte_string).transpose()?;
         let wrapped_private_key = ok_or_missing(wrapped_private_key)?;
+        let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
 
         // We don't return whether there were unknown fields in the CBOR value. This means that
         // deserialization is not injective. In particular deserialization is only an inverse of
@@ -696,6 +907,7 @@ impl TryFrom<cbor::Value> for PublicKeyCredentialSource {
             user_icon,
             cred_blob,
             large_blob_key,
+            third_party_payment,
         })
     }
 }
@@ -714,19 +926,43 @@ impl From<PublicKeyCredentialSource> for cbor::Value {
             PublicKeyCredentialSourceField::CredBlob => cred.cred_blob,
             PublicKeyCredentialSourceField::LargeBlobKey => cred.large_blob_key,
             PublicKeyCredentialSourceField::PrivateKey => cred.wrapped_private_key,
+            PublicKeyCredentialSourceField::ThirdPartyPayment => if cred.third_party_payment { Some(true) } else { None },
         }
     }
 }
 
-// The COSE key is used for both ECDH and ECDSA public keys for transmission.
-#[derive(Clone, Debug, PartialEq, Eq)]
+// The COSE key is used for ECDH, ECDSA (P-256/P-384), Ed25519, Ed448, ML-DSA, and RS256 public keys.
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct CoseKey {
-    x_bytes: [u8; EC_FIELD_SIZE],
-    y_bytes: Option<[u8; EC_FIELD_SIZE]>,
+    x_bytes: Vec<u8>,
+    y_bytes: Option<Vec<u8>>,
+    #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+    akp_pub: Option<Vec<u8>>,
+    #[cfg(feature = "rs256")]
+    rsa_n: Option<Vec<u8>>,
+    #[cfg(feature = "rs256")]
+    rsa_e: Option<Vec<u8>>,
     algorithm: i64,
     key_type: i64,
     curve: i64,
+}
+
+impl core::fmt::Debug for CoseKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("CoseKey");
+        d.field("algorithm", &self.algorithm)
+            .field("key_type", &self.key_type)
+            .field("curve", &self.curve)
+            .field("x_bytes", &TruncatedBytes(&self.x_bytes))
+            .field("y_bytes", &self.y_bytes.as_ref().map(|y| TruncatedBytes(y)));
+        #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+        d.field("akp_pub", &self.akp_pub.as_ref().map(|k| TruncatedBytes(k)));
+        #[cfg(feature = "rs256")]
+        d.field("rsa_n", &self.rsa_n.as_ref().map(|n| TruncatedBytes(n)))
+            .field("rsa_e", &self.rsa_e.as_ref().map(|e| TruncatedBytes(e)));
+        d.finish()
+    }
 }
 
 impl CoseKey {
@@ -736,20 +972,38 @@ impl CoseKey {
     const ECDH_ALGORITHM: i64 = -25;
     // The parameter behind map key 1.
     const EC2_KEY_TYPE: i64 = 2;
-    #[cfg(any(test, feature = "ed25519"))]
+    #[cfg(any(test, feature = "ed25519", feature = "ed448"))]
     const OKP_KEY_TYPE: i64 = 1;
+    #[cfg(any(test, feature = "mldsa", feature = "fndsa"))]
+    const AKP_KEY_TYPE: i64 = 7;
+    #[cfg(any(test, feature = "rs256"))]
+    const RSA_KEY_TYPE: i64 = 3;
     // The parameter behind map key -1.
     const P_256_CURVE: i64 = 1;
+    #[cfg(any(test, feature = "es384"))]
+    const P_384_CURVE: i64 = 2;
+    #[cfg(any(test, feature = "es512"))]
+    const P_521_CURVE: i64 = 3;
+    #[cfg(any(test, feature = "es256k"))]
+    const SECP256K1_CURVE: i64 = 8;
     #[cfg(any(test, feature = "ed25519"))]
     const ED25519_CURVE: i64 = 6;
+    #[cfg(any(test, feature = "ed448"))]
+    const ED448_CURVE: i64 = 7;
 
     pub fn from_ecdh_public_key<E: Env>(pk: EcdhPk<E>) -> Self {
         let mut x_bytes = [0; EC_FIELD_SIZE];
         let mut y_bytes = [0; EC_FIELD_SIZE];
         pk.to_coordinates(&mut x_bytes, &mut y_bytes);
         CoseKey {
-            x_bytes,
-            y_bytes: Some(y_bytes),
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
             algorithm: CoseKey::ECDH_ALGORITHM,
             key_type: CoseKey::EC2_KEY_TYPE,
             curve: CoseKey::P_256_CURVE,
@@ -761,11 +1015,77 @@ impl CoseKey {
         let mut y_bytes = [0; EC_FIELD_SIZE];
         pk.to_coordinates(&mut x_bytes, &mut y_bytes);
         CoseKey {
-            x_bytes,
-            y_bytes: Some(y_bytes),
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
             algorithm: ES256_ALGORITHM,
             key_type: CoseKey::EC2_KEY_TYPE,
             curve: CoseKey::P_256_CURVE,
+        }
+    }
+
+    #[cfg(feature = "es384")]
+    pub fn from_es384_public_key(
+        x_bytes: [u8; crate::api::crypto::es384::ES384_FIELD_SIZE],
+        y_bytes: [u8; crate::api::crypto::es384::ES384_FIELD_SIZE],
+    ) -> Self {
+        CoseKey {
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
+            algorithm: ES384_ALGORITHM,
+            key_type: CoseKey::EC2_KEY_TYPE,
+            curve: CoseKey::P_384_CURVE,
+        }
+    }
+
+    #[cfg(feature = "es512")]
+    pub fn from_es512_public_key(
+        x_bytes: [u8; crate::api::crypto::es512::ES512_FIELD_SIZE],
+        y_bytes: [u8; crate::api::crypto::es512::ES512_FIELD_SIZE],
+    ) -> Self {
+        CoseKey {
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
+            algorithm: ES512_ALGORITHM,
+            key_type: CoseKey::EC2_KEY_TYPE,
+            curve: CoseKey::P_521_CURVE,
+        }
+    }
+
+    #[cfg(feature = "es256k")]
+    pub fn from_es256k_public_key(
+        x_bytes: [u8; crate::api::crypto::es256k::ES256K_FIELD_SIZE],
+        y_bytes: [u8; crate::api::crypto::es256k::ES256K_FIELD_SIZE],
+    ) -> Self {
+        CoseKey {
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
+            algorithm: ES256K_ALGORITHM,
+            key_type: CoseKey::EC2_KEY_TYPE,
+            curve: CoseKey::SECP256K1_CURVE,
         }
     }
 
@@ -774,11 +1094,67 @@ impl CoseKey {
         let mut x_bytes = [0; EC_FIELD_SIZE];
         pk.to_slice(&mut x_bytes);
         CoseKey {
-            x_bytes,
+            x_bytes: x_bytes.to_vec(),
             y_bytes: None,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
             algorithm: EDDSA_ALGORITHM,
             key_type: CoseKey::OKP_KEY_TYPE,
             curve: CoseKey::ED25519_CURVE,
+        }
+    }
+
+    #[cfg(feature = "ed448")]
+    pub fn from_ed448_public_key(
+        pub_bytes: [u8; crate::api::crypto::ed448::ED448_KEY_SIZE],
+    ) -> Self {
+        CoseKey {
+            x_bytes: pub_bytes.to_vec(),
+            y_bytes: None,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
+            algorithm: ED448_ALGORITHM,
+            key_type: CoseKey::OKP_KEY_TYPE,
+            curve: CoseKey::ED448_CURVE,
+        }
+    }
+
+    #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+    pub fn from_mldsa_public_key(algorithm: i64, pub_bytes: Vec<u8>) -> Self {
+        CoseKey {
+            x_bytes: Vec::new(),
+            y_bytes: None,
+            akp_pub: Some(pub_bytes),
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
+            algorithm,
+            key_type: CoseKey::AKP_KEY_TYPE,
+            curve: 0,
+        }
+    }
+
+    #[cfg(feature = "rs256")]
+    pub fn from_rs256_public_key(n_bytes: Vec<u8>, e_bytes: Vec<u8>) -> Self {
+        CoseKey {
+            x_bytes: Vec::new(),
+            y_bytes: None,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            rsa_n: Some(n_bytes),
+            rsa_e: Some(e_bytes),
+            algorithm: RS256_ALGORITHM,
+            key_type: CoseKey::RSA_KEY_TYPE,
+            curve: 0,
         }
     }
 
@@ -787,6 +1163,12 @@ impl CoseKey {
         let CoseKey {
             x_bytes,
             y_bytes,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+                akp_pub: _,
+            #[cfg(feature = "rs256")]
+                rsa_n: _,
+            #[cfg(feature = "rs256")]
+                rsa_e: _,
             algorithm,
             key_type,
             curve,
@@ -802,7 +1184,11 @@ impl CoseKey {
         if key_type != CoseKey::EC2_KEY_TYPE || curve != CoseKey::P_256_CURVE {
             return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
         }
+        let x_bytes = <[u8; EC_FIELD_SIZE]>::try_from(x_bytes.as_slice())
+            .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
         let y_bytes = y_bytes.ok_or(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
+        let y_bytes = <[u8; EC_FIELD_SIZE]>::try_from(y_bytes.as_slice())
+            .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
         EcdhPk::<E>::from_coordinates(&x_bytes, &y_bytes)
             .ok_or(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)
     }
@@ -820,8 +1206,14 @@ impl CoseKey {
             0x05, 0x60, 0xA0, 0xBC,
         ];
         CoseKey {
-            x_bytes,
-            y_bytes: Some(y_bytes),
+            x_bytes: x_bytes.to_vec(),
+            y_bytes: Some(y_bytes.to_vec()),
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
             algorithm: CoseKey::ECDH_ALGORITHM,
             key_type: CoseKey::EC2_KEY_TYPE,
             curve: CoseKey::P_256_CURVE,
@@ -829,7 +1221,7 @@ impl CoseKey {
     }
 }
 
-// This conversion accepts ECDH, ECDSA and Ed25519.
+// This conversion accepts ECDH, ECDSA (P-256/P-384), Ed25519, Ed448, ML-DSA, and FN-DSA.
 impl TryFrom<cbor::Value> for CoseKey {
     type Error = Ctap2StatusCode;
 
@@ -845,50 +1237,227 @@ impl TryFrom<cbor::Value> for CoseKey {
             } = extract_map(cbor_value)?;
         }
 
+        #[cfg(feature = "mldsa")]
+        if matches!(
+            algorithm.as_ref().cloned().map(extract_integer),
+            Some(Ok(
+                ML_DSA_44_ALGORITHM | ML_DSA_65_ALGORITHM | ML_DSA_87_ALGORITHM
+            ))
+        ) {
+            use crate::api::crypto::mldsa::{
+                ML_DSA_44_PK_SIZE, ML_DSA_65_PK_SIZE, ML_DSA_87_PK_SIZE,
+            };
+            let algorithm = extract_integer(ok_or_missing(algorithm)?)?;
+            let key_type = extract_integer(ok_or_missing(key_type)?)?;
+            if key_type != CoseKey::AKP_KEY_TYPE {
+                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+            }
+            if x_bytes.is_some() || y_bytes.is_some() {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            let pub_bytes = extract_byte_string(ok_or_missing(curve)?)?;
+            let expected_len = match algorithm {
+                ML_DSA_44_ALGORITHM => ML_DSA_44_PK_SIZE,
+                ML_DSA_65_ALGORITHM => ML_DSA_65_PK_SIZE,
+                ML_DSA_87_ALGORITHM => ML_DSA_87_PK_SIZE,
+                _ => unreachable!(),
+            };
+            if pub_bytes.len() != expected_len {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            return Ok(CoseKey::from_mldsa_public_key(algorithm, pub_bytes));
+        }
+
+        #[cfg(feature = "fndsa")]
+        if matches!(
+            algorithm.as_ref().cloned().map(extract_integer),
+            Some(Ok(FN_DSA_512_ALGORITHM | FN_DSA_1024_ALGORITHM))
+        ) {
+            use crate::api::crypto::fndsa::{FN_DSA_512_PK_SIZE, FN_DSA_1024_PK_SIZE};
+            let algorithm = extract_integer(ok_or_missing(algorithm)?)?;
+            let key_type = extract_integer(ok_or_missing(key_type)?)?;
+            if key_type != CoseKey::AKP_KEY_TYPE {
+                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+            }
+            if x_bytes.is_some() || y_bytes.is_some() {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            let pub_bytes = extract_byte_string(ok_or_missing(curve)?)?;
+            let expected_len = match algorithm {
+                FN_DSA_512_ALGORITHM => FN_DSA_512_PK_SIZE,
+                FN_DSA_1024_ALGORITHM => FN_DSA_1024_PK_SIZE,
+                _ => unreachable!(),
+            };
+            if pub_bytes.len() != expected_len {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            return Ok(CoseKey::from_mldsa_public_key(algorithm, pub_bytes));
+        }
+
+        #[cfg(feature = "pq_composite")]
+        if matches!(
+            algorithm.as_ref().cloned().map(extract_integer),
+            Some(Ok(
+                ML_DSA_44_ES256_ALGORITHM
+                    | ML_DSA_65_ES256_ALGORITHM
+                    | ML_DSA_87_ES384_ALGORITHM
+                    | ML_DSA_44_ED25519_ALGORITHM
+                    | ML_DSA_65_ED25519_ALGORITHM
+                    | ML_DSA_87_ED448_ALGORITHM
+            ))
+        ) {
+            use crate::api::crypto::composite::{
+                ML_DSA_44_ED25519_PK_SIZE, ML_DSA_44_ES256_PK_SIZE, ML_DSA_65_ED25519_PK_SIZE,
+                ML_DSA_65_ES256_PK_SIZE, ML_DSA_87_ED448_PK_SIZE, ML_DSA_87_ES384_PK_SIZE,
+            };
+            let algorithm = extract_integer(ok_or_missing(algorithm)?)?;
+            let key_type = extract_integer(ok_or_missing(key_type)?)?;
+            if key_type != CoseKey::AKP_KEY_TYPE {
+                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+            }
+            if x_bytes.is_some() || y_bytes.is_some() {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            let pub_bytes = extract_byte_string(ok_or_missing(curve)?)?;
+            let expected_len = match algorithm {
+                ML_DSA_44_ES256_ALGORITHM => ML_DSA_44_ES256_PK_SIZE,
+                ML_DSA_65_ES256_ALGORITHM => ML_DSA_65_ES256_PK_SIZE,
+                ML_DSA_87_ES384_ALGORITHM => ML_DSA_87_ES384_PK_SIZE,
+                ML_DSA_44_ED25519_ALGORITHM => ML_DSA_44_ED25519_PK_SIZE,
+                ML_DSA_65_ED25519_ALGORITHM => ML_DSA_65_ED25519_PK_SIZE,
+                ML_DSA_87_ED448_ALGORITHM => ML_DSA_87_ED448_PK_SIZE,
+                _ => unreachable!(),
+            };
+            if pub_bytes.len() != expected_len {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            return Ok(CoseKey::from_mldsa_public_key(algorithm, pub_bytes));
+        }
+
+        #[cfg(feature = "rs256")]
+        if matches!(
+            algorithm.as_ref().cloned().map(extract_integer),
+            Some(Ok(RS256_ALGORITHM))
+        ) {
+            use crate::api::crypto::rs256::{RS256_MODULUS_SIZE, RS256_PUBLIC_EXPONENT};
+            let _algorithm = extract_integer(ok_or_missing(algorithm)?)?;
+            let key_type = extract_integer(ok_or_missing(key_type)?)?;
+            if key_type != CoseKey::RSA_KEY_TYPE {
+                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+            }
+            if y_bytes.is_some() {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            let n_bytes = extract_byte_string(ok_or_missing(curve)?)?;
+            let e_bytes = extract_byte_string(ok_or_missing(x_bytes)?)?;
+            if n_bytes.len() != RS256_MODULUS_SIZE || e_bytes.len() != RS256_PUBLIC_EXPONENT.len() {
+                return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+            }
+            return Ok(CoseKey::from_rs256_public_key(n_bytes, e_bytes));
+        }
+
         let x_bytes = extract_byte_string(ok_or_missing(x_bytes)?)?;
-        let x_bytes = <[u8; EC_FIELD_SIZE]>::try_from(x_bytes)
-            .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
         let y_bytes = y_bytes.map(extract_byte_string).transpose()?;
-        let y_bytes = y_bytes
-            .map(<[u8; EC_FIELD_SIZE]>::try_from)
-            .transpose()
-            .map_err(|_| Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)?;
         let algorithm = extract_integer(ok_or_missing(algorithm)?)?;
         let key_type = extract_integer(ok_or_missing(key_type)?)?;
         let curve = extract_integer(ok_or_missing(curve)?)?;
 
-        if algorithm == CoseKey::ECDH_ALGORITHM || algorithm == ES256_ALGORITHM {
-            if key_type != CoseKey::EC2_KEY_TYPE {
-                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
-            }
-            if curve != CoseKey::P_256_CURVE {
-                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
-            }
-            if y_bytes.is_none() {
-                return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
-            }
-        } else {
-            #[cfg(feature = "ed25519")]
-            if algorithm == EDDSA_ALGORITHM {
-                if key_type != CoseKey::OKP_KEY_TYPE {
+        match algorithm {
+            CoseKey::ECDH_ALGORITHM | ES256_ALGORITHM => {
+                if x_bytes.len() != EC_FIELD_SIZE
+                    || y_bytes.as_ref().is_some_and(|y| y.len() != EC_FIELD_SIZE)
+                {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::EC2_KEY_TYPE || curve != CoseKey::P_256_CURVE {
                     return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
                 }
-                if curve != CoseKey::ED25519_CURVE {
+                if y_bytes.is_none() {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
+                }
+            }
+            #[cfg(feature = "es384")]
+            ES384_ALGORITHM => {
+                use crate::api::crypto::es384::ES384_FIELD_SIZE;
+                if x_bytes.len() != ES384_FIELD_SIZE
+                    || y_bytes.as_ref().is_some_and(|y| y.len() != ES384_FIELD_SIZE)
+                {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::EC2_KEY_TYPE || curve != CoseKey::P_384_CURVE {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+                }
+                if y_bytes.is_none() {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
+                }
+            }
+            #[cfg(feature = "es512")]
+            ES512_ALGORITHM => {
+                use crate::api::crypto::es512::ES512_FIELD_SIZE;
+                if x_bytes.len() != ES512_FIELD_SIZE
+                    || y_bytes.as_ref().is_some_and(|y| y.len() != ES512_FIELD_SIZE)
+                {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::EC2_KEY_TYPE || curve != CoseKey::P_521_CURVE {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+                }
+                if y_bytes.is_none() {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
+                }
+            }
+            #[cfg(feature = "es256k")]
+            ES256K_ALGORITHM => {
+                use crate::api::crypto::es256k::ES256K_FIELD_SIZE;
+                if x_bytes.len() != ES256K_FIELD_SIZE
+                    || y_bytes.as_ref().is_some_and(|y| y.len() != ES256K_FIELD_SIZE)
+                {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::EC2_KEY_TYPE || curve != CoseKey::SECP256K1_CURVE {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+                }
+                if y_bytes.is_none() {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER);
+                }
+            }
+            #[cfg(feature = "ed25519")]
+            EDDSA_ALGORITHM => {
+                if x_bytes.len() != EC_FIELD_SIZE {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::OKP_KEY_TYPE || curve != CoseKey::ED25519_CURVE {
                     return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
                 }
                 if y_bytes.is_some() {
                     return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
                 }
-            } else {
-                return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
             }
-            #[cfg(not(feature = "ed25519"))]
-            return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
-        };
+            #[cfg(feature = "ed448")]
+            ED448_ALGORITHM => {
+                use crate::api::crypto::ed448::ED448_KEY_SIZE;
+                if x_bytes.len() != ED448_KEY_SIZE {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+                if key_type != CoseKey::OKP_KEY_TYPE || curve != CoseKey::ED448_CURVE {
+                    return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM);
+                }
+                if y_bytes.is_some() {
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+                }
+            }
+            _ => return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_ALGORITHM),
+        }
 
         Ok(CoseKey {
             x_bytes,
             y_bytes,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub: None,
+            #[cfg(feature = "rs256")]
+            rsa_n: None,
+            #[cfg(feature = "rs256")]
+            rsa_e: None,
             algorithm,
             key_type,
             curve,
@@ -901,17 +1470,42 @@ impl From<CoseKey> for cbor::Value {
         let CoseKey {
             x_bytes,
             y_bytes,
+            #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+            akp_pub,
+            #[cfg(feature = "rs256")]
+            rsa_n,
+            #[cfg(feature = "rs256")]
+            rsa_e,
             algorithm,
             key_type,
             curve,
         } = cose_key;
+
+        #[cfg(feature = "rs256")]
+        if let (Some(n), Some(e)) = (rsa_n, rsa_e) {
+            return cbor_map_options! {
+                1 => key_type,
+                3 => algorithm,
+                -1 => n,
+                -2 => e,
+            };
+        }
+
+        #[cfg(any(feature = "mldsa", feature = "fndsa"))]
+        if let Some(pub_bytes) = akp_pub {
+            return cbor_map_options! {
+                1 => key_type,
+                3 => algorithm,
+                -1 => pub_bytes,
+            };
+        }
 
         cbor_map_options! {
             1 => key_type,
             3 => algorithm,
             -1 => curve,
             -2 => x_bytes,
-            -3 => y_bytes.map(Vec::from),
+            -3 => y_bytes,
         }
     }
 }
@@ -1727,6 +2321,7 @@ mod test {
     fn test_from_make_credential_extensions() {
         let cbor_extensions = cbor_map! {
             "credBlob" => vec![0xCB],
+            "mtc-debug" => true,
             "credProtect" => CredentialProtectionPolicy::UserVerificationRequired,
             "hmac-secret" => true,
             "largeBlobKey" => true,
@@ -1735,12 +2330,60 @@ mod test {
         let extensions = MakeCredentialExtensions::try_from(cbor_extensions);
         let expected_extensions = MakeCredentialExtensions {
             hmac_secret: true,
+            hmac_secret_mc: None,
             cred_protect: Some(CredentialProtectionPolicy::UserVerificationRequired),
             min_pin_length: true,
             cred_blob: Some(vec![0xCB]),
             large_blob_key: Some(true),
+            third_party_payment: false,
+            mtc_debug: true,
         };
         assert_eq!(extensions, Ok(expected_extensions));
+    }
+
+    #[test]
+    fn test_from_make_credential_extensions_hmac_secret_mc() {
+        let cose_key = CoseKey::example_ecdh_pubkey();
+        let hmac_secret_mc_cbor = cbor_map! {
+            1 => cbor::Value::from(cose_key.clone()),
+            2 => vec![0x02; 32],
+            3 => vec![0x03; 16],
+            4 => 2,
+        };
+        let cbor_extensions = cbor_map! {
+            "hmac-secret" => true,
+            "hmac-secret-mc" => hmac_secret_mc_cbor.clone(),
+        };
+        let extensions = MakeCredentialExtensions::try_from(cbor_extensions);
+        let expected_input = GetAssertionHmacSecretInput {
+            key_agreement: cose_key,
+            salt_enc: vec![0x02; 32],
+            salt_auth: vec![0x03; 16],
+            pin_uv_auth_protocol: PinUvAuthProtocol::V2,
+        };
+        let expected_extensions = MakeCredentialExtensions {
+            hmac_secret: true,
+            hmac_secret_mc: Some(expected_input),
+            ..Default::default()
+        };
+        assert_eq!(extensions, Ok(expected_extensions));
+
+        // CTAP 2.3 requires "hmac-secret": true when "hmac-secret-mc" is present.
+        let cbor_missing_hmac_secret = cbor_map! {
+            "hmac-secret-mc" => hmac_secret_mc_cbor.clone(),
+        };
+        assert_eq!(
+            MakeCredentialExtensions::try_from(cbor_missing_hmac_secret),
+            Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)
+        );
+        let cbor_false_hmac_secret = cbor_map! {
+            "hmac-secret" => false,
+            "hmac-secret-mc" => hmac_secret_mc_cbor,
+        };
+        assert_eq!(
+            MakeCredentialExtensions::try_from(cbor_false_hmac_secret),
+            Err(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)
+        );
     }
 
     #[test]
@@ -1766,6 +2409,7 @@ mod test {
             hmac_secret: Some(expected_input),
             cred_blob: true,
             large_blob_key: Some(true),
+            third_party_payment: false,
         };
         assert_eq!(extensions, Ok(expected_extensions));
     }
@@ -1794,6 +2438,7 @@ mod test {
             hmac_secret: Some(expected_input),
             cred_blob: true,
             large_blob_key: Some(true),
+            third_party_payment: false,
         };
         assert_eq!(extensions, Ok(expected_extensions));
         // TODO more tests, check default
@@ -1841,6 +2486,8 @@ mod test {
             sig: vec![0x55, 0x55, 0x55, 0x55],
             x5c: Some(vec![vec![0x5C, 0x5C, 0x5C, 0x5C]]),
             ecdaa_key_id: Some(vec![0xEC, 0xDA, 0x1D]),
+            pub_key: None,
+            mtc_cert: None,
         };
         let created_cbor: cbor::Value = packed_attestation_statement.into();
         assert_eq!(created_cbor, cbor_packed_attestation_statement);
@@ -2038,7 +2685,7 @@ mod test {
         ecdsa_pk.to_coordinates(&mut x_bytes, &mut y_bytes);
         let cose_key = CoseKey::from_ecdsa_public_key::<TestEnv>(ecdsa_pk);
         assert_eq!(cose_key.x_bytes, x_bytes);
-        assert_eq!(cose_key.y_bytes, Some(y_bytes));
+        assert_eq!(cose_key.y_bytes, Some(y_bytes.to_vec()));
         assert_eq!(cose_key.algorithm, ES256_ALGORITHM);
     }
 
@@ -2054,6 +2701,80 @@ mod test {
         assert_eq!(cose_key.x_bytes, x_bytes);
         assert_eq!(cose_key.y_bytes, None);
         assert_eq!(cose_key.algorithm, EDDSA_ALGORITHM);
+    }
+
+    #[test]
+    #[cfg(feature = "es384")]
+    fn test_from_cose_key_es384() {
+        use crate::api::crypto::es384::Es384SecretKey;
+        let mut env = TestEnv::default();
+        let sk = Es384SecretKey::random(env.rng());
+        let (x, y) = sk.public_key_coordinates();
+        let cose_key = CoseKey::from_es384_public_key(x, y);
+        assert_eq!(cose_key.x_bytes, x);
+        assert_eq!(cose_key.y_bytes, Some(y.to_vec()));
+        assert_eq!(cose_key.algorithm, ES384_ALGORITHM);
+        let cbor_val = cbor::Value::from(cose_key.clone());
+        assert_eq!(CoseKey::try_from(cbor_val), Ok(cose_key));
+    }
+
+    #[test]
+    #[cfg(feature = "es512")]
+    fn test_from_cose_key_es512() {
+        use crate::api::crypto::es512::Es512SecretKey;
+        let mut env = TestEnv::default();
+        let sk = Es512SecretKey::random(env.rng());
+        let (x, y) = sk.public_key_coordinates();
+        let cose_key = CoseKey::from_es512_public_key(x, y);
+        assert_eq!(cose_key.x_bytes, x);
+        assert_eq!(cose_key.y_bytes, Some(y.to_vec()));
+        assert_eq!(cose_key.algorithm, ES512_ALGORITHM);
+        let cbor_val = cbor::Value::from(cose_key.clone());
+        assert_eq!(CoseKey::try_from(cbor_val), Ok(cose_key));
+    }
+
+    #[test]
+    #[cfg(feature = "es256k")]
+    fn test_from_cose_key_es256k() {
+        use crate::api::crypto::es256k::Es256kSecretKey;
+        let mut env = TestEnv::default();
+        let sk = Es256kSecretKey::random(env.rng());
+        let (x, y) = sk.public_key_coordinates();
+        let cose_key = CoseKey::from_es256k_public_key(x, y);
+        assert_eq!(cose_key.x_bytes, x);
+        assert_eq!(cose_key.y_bytes, Some(y.to_vec()));
+        assert_eq!(cose_key.algorithm, ES256K_ALGORITHM);
+        let cbor_val = cbor::Value::from(cose_key.clone());
+        assert_eq!(CoseKey::try_from(cbor_val), Ok(cose_key));
+    }
+
+    #[test]
+    #[cfg(feature = "ed448")]
+    fn test_from_cose_key_ed448() {
+        use crate::api::crypto::ed448::Ed448SecretKey;
+        let mut env = TestEnv::default();
+        let sk = Ed448SecretKey::random(env.rng());
+        let pk = sk.public_key_bytes();
+        let cose_key = CoseKey::from_ed448_public_key(pk);
+        assert_eq!(cose_key.x_bytes, pk);
+        assert_eq!(cose_key.y_bytes, None);
+        assert_eq!(cose_key.algorithm, ED448_ALGORITHM);
+        let cbor_val = cbor::Value::from(cose_key.clone());
+        assert_eq!(CoseKey::try_from(cbor_val), Ok(cose_key));
+    }
+
+    #[test]
+    #[cfg(feature = "rs256")]
+    fn test_from_cose_key_rs256() {
+        use crate::api::crypto::rs256::Rs256SecretKey;
+        let mut env = TestEnv::default();
+        let sk = Rs256SecretKey::random(env.rng());
+        let (n, e) = sk.public_key();
+        let cose_key = CoseKey::from_rs256_public_key(n.to_vec(), e.to_vec());
+        assert_eq!(cose_key.algorithm, RS256_ALGORITHM);
+        assert_eq!(cose_key.key_type, CoseKey::RSA_KEY_TYPE);
+        let cbor_val = cbor::Value::from(cose_key.clone());
+        assert_eq!(CoseKey::try_from(cbor_val), Ok(cose_key));
     }
 
     #[test]
@@ -2224,6 +2945,7 @@ mod test {
             user_icon: None,
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         };
         assert_eq!(
             PublicKeyCredentialSource::try_from(cbor::Value::from(credential.clone())),
@@ -2277,6 +2999,15 @@ mod test {
 
         let credential = PublicKeyCredentialSource {
             large_blob_key: Some(vec![0x1B]),
+            ..credential
+        };
+        assert_eq!(
+            PublicKeyCredentialSource::try_from(cbor::Value::from(credential.clone())),
+            Ok(credential.clone())
+        );
+
+        let credential = PublicKeyCredentialSource {
+            third_party_payment: true,
             ..credential
         };
         assert_eq!(

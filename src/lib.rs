@@ -41,11 +41,9 @@ fn main() -> ! {
         timeout |= wink.is_some();
         #[cfg(feature = "ctap1")]
         (timeout |= u2f.is_some());
-        match env::hid_connection::recv(recv_packet.as_mut().unwrap(), timeout.then_some(500))
-            .unwrap()
-        {
-            RecvStatus::Timeout => recv_packet = None,
-            RecvStatus::Received(endpoint) => assert_eq!(endpoint, UsbEndpoint::MainHid),
+        match env::hid_connection::recv(recv_packet.as_mut().unwrap(), timeout.then_some(500)) {
+            Ok(RecvStatus::Timeout) | Err(_) => recv_packet = None,
+            Ok(RecvStatus::Received(endpoint)) => assert_eq!(endpoint, UsbEndpoint::MainHid),
         }
         #[cfg(feature = "ctap1")]
         if u2f.as_ref().is_some_and(|x| x.is_present()) {

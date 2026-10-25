@@ -15,7 +15,7 @@
 
 set -e
 
-FEATURES="ctap1,config-command"
+FEATURES="ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,up-always-true,debug"
 
 usage() {
   echo "Usage: $0 [options] <target>"
@@ -85,6 +85,24 @@ SOFTWARE_CRYPTO_FEATURES="software-crypto-aes256-cbc"
 SOFTWARE_CRYPTO_FEATURES+=",software-crypto-hmac-sha256"
 SOFTWARE_CRYPTO_FEATURES+=",software-crypto-p256-ecdh"
 SOFTWARE_CRYPTO_FEATURES+=",software-crypto-p256-ecdsa"
+if [[ ",$FEATURES," == *",ed25519,"* ]]; then
+  SOFTWARE_CRYPTO_FEATURES+=",software-crypto-ed25519"
+fi
+
+XTASK_FLAGS=(--release --native)
+RUNNER_LOG_FLAGS=(--single-sided)
+if [[ ",$FEATURES," == *",debug,"* ]]; then
+  export WASEFIRE_DEBUG=1
+  XTASK_FLAGS=(--native)
+  RUNNER_LOG_FLAGS+=(--log=trace)
+fi
+
+if [[ "$TARGET" != "host" ]]; then
+  touch /tmp/opensk_flashing.lock
+  trap 'rm -f /tmp/opensk_flashing.lock' EXIT
+  pkill -f "probe-rs attach" 2>/dev/null || true
+  sleep 1
+fi
 
 case $TARGET in
   host)
@@ -97,19 +115,32 @@ case $TARGET in
     fi
     ;;
   opentitan)
-    cargo xtask --release --native applet rust ../.. --opt-level=z --features="$FEATURES" \
-      runner opentitan --opt-level=z --features=usb-ctap \
+    cargo xtask "${XTASK_FLAGS[@]}" applet rust ../.. --opt-level=z --features="$FEATURES" \
+      runner opentitan "${RUNNER_LOG_FLAGS[@]}" --opt-level=z --features=usb-ctap \
       "${CMD[@]}"
     ;;
   nrf52840dk)
-    cargo xtask --release --native applet rust ../.. --opt-level=z --features="$FEATURES" \
-      runner nordic --opt-level=z --features=usb-ctap \
-        --features="$SOFTWARE_CRYPTO_FEATURES" \
-      "${CMD[@]}"
+    if [ "${CMD[0]}" = "flash" ]; then
+      cargo xtask "${XTASK_FLAGS[@]}" applet rust ../.. --opt-level=z --features="$FEATURES" \
+        runner nordic "${RUNNER_LOG_FLAGS[@]}" --opt-level=z --features=usb-ctap \
+          --features="$SOFTWARE_CRYPTO_FEATURES"
+      cargo build --manifest-path crates/runner-nordic/crates/bootloader/Cargo.toml \
+        --release --target=thumbv7em-none-eabi --features=board-devkit,single-sided \
+        -Zbuild-std=core --config='profile.release.panic="immediate-abort"'
+      ./scripts/wrapper.sh probe-rs erase --chip=nRF52840_xxAA --allow-erase-all
+      ./scripts/wrapper.sh probe-rs download --chip=nRF52840_xxAA target/thumbv7em-none-eabi/release/bootloader
+      ./scripts/wrapper.sh probe-rs download --chip=nRF52840_xxAA target/thumbv7em-none-eabi/release/runner-nordic
+      ./scripts/wrapper.sh probe-rs reset --chip=nRF52840_xxAA
+    else
+      cargo xtask "${XTASK_FLAGS[@]}" applet rust ../.. --opt-level=z --features="$FEATURES" \
+        runner nordic "${RUNNER_LOG_FLAGS[@]}" --opt-level=z --features=usb-ctap \
+          --features="$SOFTWARE_CRYPTO_FEATURES" \
+        "${CMD[@]}"
+    fi
     ;;
   nrf52840_dongle)
-    cargo xtask --release --native applet rust ../.. --opt-level=z --features="$FEATURES" \
-      runner nordic --board=dongle --opt-level=z --features=usb-ctap \
+    cargo xtask "${XTASK_FLAGS[@]}" applet rust ../.. --opt-level=z --features="$FEATURES" \
+      runner nordic --board=dongle "${RUNNER_LOG_FLAGS[@]}" --opt-level=z --features=usb-ctap \
         --features="$SOFTWARE_CRYPTO_FEATURES" \
       "${CMD[@]}"
     ;;

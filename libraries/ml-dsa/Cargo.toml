@@ -1,0 +1,100 @@
+[package]
+edition = "2024"
+rust-version = "1.85"
+name = "ml-dsa"
+version = "0.1.1"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = """
+Pure Rust implementation of ML-DSA (formerly known as CRYSTALS-Dilithium) as
+described in FIPS-204 (final)
+"""
+homepage = "https://github.com/RustCrypto/signatures/tree/master/ml-dsa"
+readme = "README.md"
+keywords = [
+    "crypto",
+    "signature",
+]
+categories = ["cryptography"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/RustCrypto/signatures"
+resolver = "2"
+
+[features]
+alloc = [
+    "hybrid-array/alloc",
+    "module-lattice/alloc",
+    "pkcs8?/alloc",
+    "signature/alloc",
+]
+default = [
+    "alloc",
+    "getrandom",
+    "pkcs8",
+]
+getrandom = [
+    "common/getrandom",
+    "rand_core",
+]
+pkcs8 = [
+    "dep:const-oid",
+    "dep:pkcs8",
+]
+rand_core = [
+    "common/rand_core",
+    "signature/rand_core",
+]
+zeroize = [
+    "dep:zeroize",
+    "hybrid-array/zeroize",
+    "module-lattice/zeroize",
+]
+
+[lib]
+name = "ml_dsa"
+path = "src/lib.rs"
+
+[dependencies.common]
+version = "0.2"
+default-features = false
+package = "crypto-common"
+
+[dependencies.const-oid]
+version = "0.10"
+features = ["db"]
+optional = true
+
+[dependencies.ctutils]
+version = "0.4"
+default-features = false
+
+[dependencies.hybrid-array]
+version = "0.4"
+features = ["extra-sizes"]
+
+[dependencies.module-lattice]
+version = "0.2.3"
+features = ["ctutils"]
+
+[dependencies.pkcs8]
+version = "0.11"
+optional = true
+default-features = false
+
+[dependencies.shake]
+version = "0.1"
+default-features = false
+
+[dependencies.signature]
+version = "3"
+features = ["digest"]
+default-features = false
+
+[dependencies.zeroize]
+version = "1.8.1"
+optional = true
+default-features = false

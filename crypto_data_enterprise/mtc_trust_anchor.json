@@ -1,0 +1,17 @@
+{
+  "caId": "g5k_AQI",
+  "hashAlg": "sha-256",
+  "maxBatchWindow": 315360000,
+  "subtrees": [
+    {
+      "logNumber": 7,
+      "start": 0,
+      "end": 8,
+      "rootHash": "Jm8we_dJthE0X0JSq1xc_joQUs9WS-SQzBPpmkXJqHs",
+      "alg": -46,
+      "signature": "AAAAAAAAAAUAAAAELMNoZ1bGFoM6hHMn0KsFZGK8S0z2BkLvwlrRAPJXuxovPiJ3SS7j_ilpiRNEsR6NGAnxTtSj0VaZ-hubB2I9J1mSJvKbK_Zm6K_6pjrCZnSxHkKg1VMd4645jPz563SdCArBP-fZIzDDKrwDRIRu93wa9ZmVlYbFVjW-Uqcm4rujvFWzaRuVNa0de4XIzvNhYk6eGfQLiCpIYXzQQE2B7jL0KOGIyIjwufP_psjNEaqTNLy5XuFawQBlT6uQORWYGE3otnHTmtH8p26_qN4PEoIUbz6kcWPxVPfFq-mI5rHacl8fGkDB4Xfk1ZYcQU88IKXVPDY_56Bsd6RPZ_g8N_E9bVGk7LBjWzgPSfBlwfugoHBymGv0-mOqihIGPUv0uNeHi6MXqvdY47f95wkOs8nZQbXSl5cT4CtGwSvvsOetNBwDzxFoHGcan5ovwMZS6VOj00eQLgcpvRnd-nhDlUV74Dti7tmrza2-YGKbYpRAuPW3tXjETUfR3YvmOKcck9LnDzNE9y08lvfAkaaubFnvz2-ow_zEZtQ3VEUgeO7KpNG9Ddh4tAS2xMdMdEK7__OxF3RqAC9SyPuE7_Hr-5DCzYfU0Hw2gT-umdK6Pc4jqJFGNjq_lD6E0kav_lYxMpLbK1hikcwsHNJHkKfUykeExLyZb32TfMnKTnPO__hvVOIavLhuF5IvdTxeQRuufj2wzKDcV5-3Pj1QAmuszrP77Ei558NXDjJJET0SWqsyM9JmNt1ZZEq6CvtlJjpLvdUpcabn5G8uuW9nQZtissk6E0btD60qoX1T8Fh5aqMaiqZ-8pO_y0WI8NFIPRIHp2hjkI0sod9YSflLQMfl-dvyLJrGEi_O7Urky1kOe88itIlOkjjdupUadS1JVrq1NNArQPkyZ2UPN-1v9izZ-3jybwGDDIqc6SqyGACkCDmWao6d3fWyY81yOryYCYQDUJcRMJ9My01DuXo5Yv9ds0Ed2-ChZme2h6xYxWTKhw34H7I1t-U0wtIpwmxPTl7k6zGqMr1O2FpfsZvL_5JxK_wgkoXildj10Nf_fTEG67hFu6FqJUIx8zyStTIeaEq36e2PmQGEBYgwPkjUK3Vel2Nfo-3lB9kkyp6eAvjGh2jswYTaiYpmyBoa3zEdWp40ooBiuZlbbJH7RRnVp9tvYJEG2RfzgplnE3Dc-qq7FPq2E_vOwz0Dhj1NsOmQvowEY8JFok-cat2R-y18OpqoUxGMdYopPYbJONZ6JDBcw2TI_azOR6LSeMoXc_J7fpU16YSY6WmXZs0XVt-BHhh1JpNhfqWXA-qR4niqzu6HhmJeqVwEtTtJofWxcYPDaZfSPo9DVaqEp1CRGU4uuJLbfc8FiCS81r1kOV38upVrfP1CdIOcysMnYSgbdiPTonhMRZ3f1AAhQU1jQpMRIsipM_57x0wuO5VWabqBvlf1tCfnl9ZJhoSkH7VAA17NbfcRDKmL5ks4hpaqyqxL1Ki9QwAAAAV1aXMVf2sCGPrv1QT2AXe_qFt77_VC6Pa1WZS7ib2nax6EtvltrCN0HKZjG1SYOhshh8RLMef-fF8ufSllDE9dHag9WnLcG9ByFMJiTqbdYbKxPFw9PEM-kjd3kmhmbVL71nCcl-ahUmc7gI_7JIp1gw0RHw8tI8pX2ltQwCExCN2DNQQCRmwVR70lLfPukCkF7ltxoe_O8nBBJtoKHPJ2"
+    }
+  ],
+  "revokedSerials": [],
+  "batchKeys": []
+}

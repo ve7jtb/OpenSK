@@ -21,11 +21,12 @@ use crate::ctap::data_formats::CredentialProtectionPolicy;
 use crate::ctap::secret::Secret;
 use crate::ctap::{cbor_read, cbor_write};
 use crate::env::{AesKey, Env, Hmac};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::{TryFrom, TryInto};
 use rand_core::RngCore;
 use sk_cbor as cbor;
-use sk_cbor::{cbor_map_options, destructure_cbor_map};
+use sk_cbor::{cbor_array, cbor_bytes, cbor_int, cbor_map_options, destructure_cbor_map};
 
 // CBOR credential IDs consist of
 // - 1   byte : version number
@@ -37,7 +38,27 @@ const MIN_CREDENTIAL_ID_SIZE: usize = CBOR_CREDENTIAL_ID_SIZE;
 pub(crate) const MAX_CREDENTIAL_ID_SIZE: usize = CBOR_CREDENTIAL_ID_SIZE;
 
 pub const CBOR_CREDENTIAL_ID_VERSION: u8 = 0x01;
+pub const COMPACT_CREDENTIAL_ID_VERSION: u8 = 0x02;
+pub const COMPACT_CREDENTIAL_ID_SIZE: usize = 51;
+pub const ULTRA_COMPACT_CREDENTIAL_ID_VERSION: u8 = 0x03;
+pub const ULTRA_COMPACT_CREDENTIAL_ID_SIZE: usize = 6;
 const MAX_PADDING_LENGTH: u8 = 0xBF;
+
+fn extract_compact_pq_seed(wrapped_private_key: &cbor::Value) -> Option<(i8, [u8; 32])> {
+    let mut items = wrapped_private_key.clone().extract_array()?;
+    if items.len() != 2 {
+        return None;
+    }
+    let seed_bytes = items.pop()?.extract_byte_string()?;
+    let alg = items.pop()?.extract_integer()?;
+    if matches!(alg, -50 | -56 | -59) && seed_bytes.len() == 32 {
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_bytes);
+        Some((alg as i8, seed))
+    } else {
+        None
+    }
+}
 
 /// Stored data for credentials.
 #[derive(Clone, Debug)]
@@ -47,6 +68,7 @@ pub struct CredentialSource {
     pub rp_id_hash: [u8; 32],
     pub cred_protect_policy: Option<CredentialProtectionPolicy>,
     pub cred_blob: Option<Vec<u8>>,
+    pub third_party_payment: bool,
 }
 
 /// CBOR map keys for serialized credential IDs.
@@ -55,6 +77,7 @@ enum CredentialSourceField {
     RpIdHash = 1,
     CredProtectPolicy = 2,
     CredBlob = 3,
+    ThirdPartyPayment = 4,
 }
 
 impl From<CredentialSourceField> for cbor::Value {
@@ -126,12 +149,75 @@ impl<T: Helper> KeyStore for T {
     /// Other information, such as a user name, are not stored. Since encrypted credential IDs are
     /// stored server-side, this information is already available (unencrypted).
     fn wrap_credential(&mut self, credential: CredentialSource) -> Result<Vec<u8>, Error> {
+        if credential.cred_blob.is_none()
+            && let Some((alg_i8, seed_32)) = extract_compact_pq_seed(&credential.wrapped_private_key)
+        {
+            let master_keys = get_master_keys(self)?;
+            let policy_bits = credential.cred_protect_policy.map_or(0u8, |p| p as u8);
+            let tpp_bit = if credential.third_party_payment {
+                0x08
+            } else {
+                0x00
+            };
+
+            #[cfg(feature = "pq_composite")]
+            if matches!(alg_i8, -56 | -59) {
+                let nonce = [seed_32[0], seed_32[1], seed_32[2]];
+                if seed_32 == crate::api::crypto::composite::CompositeSecretKey::<T>::expand_short_nonce(nonce) {
+                    let alg_bit = if alg_i8 == -59 { 0x10 } else { 0x00 };
+                    let flags = policy_bits | tpp_bit | alg_bit;
+                    let mut pad_input = Vec::with_capacity(2 + 32);
+                    pad_input.push(ULTRA_COMPACT_CREDENTIAL_ID_VERSION);
+                    pad_input.push(flags);
+                    pad_input.extend_from_slice(&credential.rp_id_hash);
+                    let mut pad_hmac = [0u8; HASH_SIZE];
+                    Hmac::<T>::mac(&master_keys.encryption, &pad_input, &mut pad_hmac);
+
+                    let mut credential_id = Vec::with_capacity(ULTRA_COMPACT_CREDENTIAL_ID_SIZE);
+                    credential_id.push(ULTRA_COMPACT_CREDENTIAL_ID_VERSION);
+                    credential_id.push(flags);
+                    credential_id.push(nonce[0] ^ pad_hmac[0]);
+                    credential_id.push(nonce[1] ^ pad_hmac[1]);
+                    credential_id.push(nonce[2] ^ pad_hmac[2]);
+
+                    let mut mac_input = Vec::with_capacity(5 + 32);
+                    mac_input.extend_from_slice(&credential_id);
+                    mac_input.extend_from_slice(&credential.rp_id_hash);
+                    let mut id_hmac = [0u8; HASH_SIZE];
+                    Hmac::<T>::mac(&master_keys.authentication, &mac_input, &mut id_hmac);
+                    credential_id.push(id_hmac[0]);
+                    return Ok(credential_id);
+                }
+            }
+
+            let aes_key = AesKey::<T>::new(&master_keys.encryption);
+            let encrypted_seed =
+                aes256_cbc_encrypt::<T>(self.rng(), &aes_key, &seed_32, false).map_err(|_| Error)?;
+            let flags = policy_bits | tpp_bit;
+
+            let mut credential_id = Vec::with_capacity(COMPACT_CREDENTIAL_ID_SIZE);
+            credential_id.push(COMPACT_CREDENTIAL_ID_VERSION);
+            credential_id.push(alg_i8 as u8);
+            credential_id.push(flags);
+            credential_id.extend_from_slice(&encrypted_seed);
+
+            let mut mac_input = Vec::with_capacity(35 + 32);
+            mac_input.extend_from_slice(&credential_id);
+            mac_input.extend_from_slice(&credential.rp_id_hash);
+
+            let mut id_hmac = [0; HASH_SIZE];
+            Hmac::<T>::mac(&master_keys.authentication, &mac_input, &mut id_hmac);
+            credential_id.extend_from_slice(&id_hmac[..16]);
+            return Ok(credential_id);
+        }
+
         let mut payload = Vec::new();
         let cbor = cbor_map_options! {
           CredentialSourceField::PrivateKey => credential.wrapped_private_key,
           CredentialSourceField::RpIdHash => credential.rp_id_hash,
           CredentialSourceField::CredProtectPolicy => credential.cred_protect_policy,
           CredentialSourceField::CredBlob => credential.cred_blob,
+          CredentialSourceField::ThirdPartyPayment => if credential.third_party_payment { Some(true) } else { None },
         };
         cbor_write(cbor, &mut payload).map_err(|_| Error)?;
         add_padding(&mut payload)?;
@@ -168,6 +254,112 @@ impl<T: Helper> KeyStore for T {
         bytes: &[u8],
         rp_id_hash: &[u8],
     ) -> Result<Option<CredentialSource>, Error> {
+        #[cfg(feature = "pq_composite")]
+        if bytes.first() == Some(&ULTRA_COMPACT_CREDENTIAL_ID_VERSION) {
+            if bytes.len() != ULTRA_COMPACT_CREDENTIAL_ID_SIZE || rp_id_hash.len() != 32 {
+                return Ok(None);
+            }
+            let master_keys = get_master_keys(self)?;
+            let mut mac_input = Vec::with_capacity(5 + 32);
+            mac_input.extend_from_slice(&bytes[..5]);
+            mac_input.extend_from_slice(rp_id_hash);
+            let mut expected_hmac = [0u8; HASH_SIZE];
+            Hmac::<T>::mac(&master_keys.authentication, &mac_input, &mut expected_hmac);
+            if (expected_hmac[0] ^ bytes[5]) != 0 {
+                return Ok(None);
+            }
+            let flags = bytes[1];
+            if (flags & !0x1F) != 0 {
+                return Ok(None);
+            }
+            let alg_i8: i8 = if (flags & 0x10) != 0 { -59 } else { -56 };
+            let cred_protect_policy = match flags & 0x07 {
+                0 => None,
+                p => Some(
+                    CredentialProtectionPolicy::try_from(cbor::Value::from(p as u64))
+                        .map_err(|_| Error)?,
+                ),
+            };
+            let third_party_payment = (flags & 0x08) != 0;
+
+            let mut pad_input = Vec::with_capacity(2 + 32);
+            pad_input.push(ULTRA_COMPACT_CREDENTIAL_ID_VERSION);
+            pad_input.push(flags);
+            pad_input.extend_from_slice(rp_id_hash);
+            let mut pad_hmac = [0u8; HASH_SIZE];
+            Hmac::<T>::mac(&master_keys.encryption, &pad_input, &mut pad_hmac);
+            let nonce = [
+                bytes[2] ^ pad_hmac[0],
+                bytes[3] ^ pad_hmac[1],
+                bytes[4] ^ pad_hmac[2],
+            ];
+            let seed_32 =
+                crate::api::crypto::composite::CompositeSecretKey::<T>::expand_short_nonce(nonce);
+            let wrapped_private_key = cbor_array![
+                cbor_int!(alg_i8 as i64),
+                cbor_bytes!(seed_32.to_vec()),
+            ];
+            return Ok(Some(CredentialSource {
+                wrapped_private_key,
+                rp_id_hash: rp_id_hash.try_into().unwrap(),
+                cred_protect_policy,
+                cred_blob: None,
+                third_party_payment,
+            }));
+        }
+
+        if bytes.first() == Some(&COMPACT_CREDENTIAL_ID_VERSION) {
+            if bytes.len() != COMPACT_CREDENTIAL_ID_SIZE || rp_id_hash.len() != 32 {
+                return Ok(None);
+            }
+            let master_keys = get_master_keys(self)?;
+            let mut mac_input = Vec::with_capacity(35 + 32);
+            mac_input.extend_from_slice(&bytes[..35]);
+            mac_input.extend_from_slice(rp_id_hash);
+            let mut expected_hmac = [0u8; HASH_SIZE];
+            Hmac::<T>::mac(&master_keys.authentication, &mac_input, &mut expected_hmac);
+            let mut diff = 0u8;
+            for (a, b) in expected_hmac[..16].iter().zip(bytes[35..51].iter()) {
+                diff |= a ^ b;
+            }
+            if diff != 0 {
+                return Ok(None);
+            }
+            let alg_i8 = bytes[1] as i8;
+            if !matches!(alg_i8, -50 | -56 | -59) {
+                return Ok(None);
+            }
+            let flags = bytes[2];
+            if (flags & !0x0F) != 0 {
+                return Ok(None);
+            }
+            let cred_protect_policy = match flags & 0x07 {
+                0 => None,
+                p => Some(
+                    CredentialProtectionPolicy::try_from(cbor::Value::from(p as u64))
+                        .map_err(|_| Error)?,
+                ),
+            };
+            let third_party_payment = (flags & 0x08) != 0;
+            let aes_key = AesKey::<T>::new(&master_keys.encryption);
+            let seed_32 =
+                aes256_cbc_decrypt::<T>(&aes_key, &bytes[3..35], false).map_err(|_| Error)?;
+            if seed_32.len() != 32 {
+                return Err(Error);
+            }
+            let wrapped_private_key = cbor_array![
+                cbor_int!(alg_i8 as i64),
+                cbor_bytes!(seed_32.to_vec()),
+            ];
+            return Ok(Some(CredentialSource {
+                wrapped_private_key,
+                rp_id_hash: rp_id_hash.try_into().unwrap(),
+                cred_protect_policy,
+                cred_blob: None,
+                third_party_payment,
+            }));
+        }
+
         if bytes.len() < MIN_CREDENTIAL_ID_SIZE {
             return Ok(None);
         }
@@ -304,6 +496,7 @@ fn decrypt_cbor_credential_id<E: Env>(
           CredentialSourceField::RpIdHash => rp_id_hash,
           CredentialSourceField::CredProtectPolicy => cred_protect_policy,
           CredentialSourceField::CredBlob => cred_blob,
+          CredentialSourceField::ThirdPartyPayment => third_party_payment,
       } = extract_map(cbor_credential_source)?;
     }
     Ok(match (wrapped_private_key, rp_id_hash) {
@@ -317,11 +510,13 @@ fn decrypt_cbor_credential_id<E: Env>(
                 .transpose()
                 .map_err(|_| Error)?;
             let cred_blob = cred_blob.map(extract_byte_string).transpose()?;
+            let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
             Some(CredentialSource {
                 wrapped_private_key,
                 rp_id_hash: rp_id_hash.try_into().unwrap(),
                 cred_protect_policy,
                 cred_blob,
+                third_party_payment,
             })
         }
         _ => None,
@@ -330,6 +525,10 @@ fn decrypt_cbor_credential_id<E: Env>(
 
 fn extract_byte_string(cbor_value: cbor::Value) -> Result<Vec<u8>, Error> {
     cbor_value.extract_byte_string().ok_or(Error)
+}
+
+fn extract_bool(cbor_value: cbor::Value) -> Result<bool, Error> {
+    cbor_value.extract_bool().ok_or(Error)
 }
 
 fn extract_map(cbor_value: cbor::Value) -> Result<Vec<(cbor::Value, cbor::Value)>, Error> {
@@ -356,6 +555,7 @@ mod test {
             rp_id_hash: [0x55; 32],
             cred_protect_policy: Some(CredentialProtectionPolicy::UserVerificationOptional),
             cred_blob: Some(vec![0xAA; 32]),
+            third_party_payment: false,
         }
     }
 

@@ -20,7 +20,7 @@ use super::data_formats::{
     CredentialManagementSubCommandParameters, GetAssertionExtensions, GetAssertionOptions,
     MakeCredentialExtensions, MakeCredentialOptions, PinUvAuthProtocol,
     PublicKeyCredentialDescriptor, PublicKeyCredentialParameter, PublicKeyCredentialRpEntity,
-    PublicKeyCredentialUserEntity, extract_array, extract_byte_string, extract_map,
+    PublicKeyCredentialUserEntity, TruncatedBytes, extract_array, extract_byte_string, extract_map,
     extract_text_string, extract_unsigned, extract_usize, ok_or_missing,
 };
 #[cfg(feature = "config_command")]
@@ -158,7 +158,7 @@ impl Command {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct AuthenticatorMakeCredentialParameters {
     pub client_data_hash: Vec<u8>,
@@ -173,6 +173,28 @@ pub struct AuthenticatorMakeCredentialParameters {
     pub pin_uv_auth_param: Option<Vec<u8>>,
     pub pin_uv_auth_protocol: Option<PinUvAuthProtocol>,
     pub enterprise_attestation: Option<u64>,
+    pub attestation_formats_preference: Option<Vec<String>>,
+}
+
+impl core::fmt::Debug for AuthenticatorMakeCredentialParameters {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorMakeCredentialParameters")
+            .field("client_data_hash", &TruncatedBytes(&self.client_data_hash))
+            .field("rp", &self.rp)
+            .field("user", &self.user)
+            .field("pub_key_cred_params", &self.pub_key_cred_params)
+            .field("exclude_list", &self.exclude_list)
+            .field("extensions", &self.extensions)
+            .field("options", &self.options)
+            .field("pin_uv_auth_param", &self.pin_uv_auth_param.as_ref().map(|p| TruncatedBytes(p)))
+            .field("pin_uv_auth_protocol", &self.pin_uv_auth_protocol)
+            .field("enterprise_attestation", &self.enterprise_attestation)
+            .field(
+                "attestation_formats_preference",
+                &self.attestation_formats_preference,
+            )
+            .finish()
+    }
 }
 
 impl TryFrom<cbor::Value> for AuthenticatorMakeCredentialParameters {
@@ -191,6 +213,7 @@ impl TryFrom<cbor::Value> for AuthenticatorMakeCredentialParameters {
                 0x08 => pin_uv_auth_param,
                 0x09 => pin_uv_auth_protocol,
                 0x0A => enterprise_attestation,
+                0x0B => attestation_formats_preference,
             } = extract_map(cbor_value)?;
         }
 
@@ -238,6 +261,15 @@ impl TryFrom<cbor::Value> for AuthenticatorMakeCredentialParameters {
             .transpose()?;
         // We don't convert into EnterpriseAttestationMode to maintain the correct order of errors.
         let enterprise_attestation = enterprise_attestation.map(extract_unsigned).transpose()?;
+        let attestation_formats_preference = match attestation_formats_preference {
+            Some(entry) => Some(
+                extract_array(entry)?
+                    .into_iter()
+                    .map(extract_text_string)
+                    .collect::<CtapResult<Vec<String>>>()?,
+            ),
+            None => None,
+        };
 
         Ok(AuthenticatorMakeCredentialParameters {
             client_data_hash,
@@ -250,11 +282,12 @@ impl TryFrom<cbor::Value> for AuthenticatorMakeCredentialParameters {
             pin_uv_auth_param,
             pin_uv_auth_protocol,
             enterprise_attestation,
+            attestation_formats_preference,
         })
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct AuthenticatorGetAssertionParameters {
     pub rp_id: String,
@@ -266,6 +299,20 @@ pub struct AuthenticatorGetAssertionParameters {
     pub options: GetAssertionOptions,
     pub pin_uv_auth_param: Option<Vec<u8>>,
     pub pin_uv_auth_protocol: Option<PinUvAuthProtocol>,
+}
+
+impl core::fmt::Debug for AuthenticatorGetAssertionParameters {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorGetAssertionParameters")
+            .field("rp_id", &self.rp_id)
+            .field("client_data_hash", &TruncatedBytes(&self.client_data_hash))
+            .field("allow_list", &self.allow_list)
+            .field("extensions", &self.extensions)
+            .field("options", &self.options)
+            .field("pin_uv_auth_param", &self.pin_uv_auth_param.as_ref().map(|p| TruncatedBytes(p)))
+            .field("pin_uv_auth_protocol", &self.pin_uv_auth_protocol)
+            .finish()
+    }
 }
 
 impl TryFrom<cbor::Value> for AuthenticatorGetAssertionParameters {
@@ -326,7 +373,7 @@ impl TryFrom<cbor::Value> for AuthenticatorGetAssertionParameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
 pub struct AuthenticatorClientPinParameters {
     pub pin_uv_auth_protocol: PinUvAuthProtocol,
@@ -337,6 +384,21 @@ pub struct AuthenticatorClientPinParameters {
     pub pin_hash_enc: Option<Vec<u8>>,
     pub permissions: Option<u8>,
     pub permissions_rp_id: Option<String>,
+}
+
+impl core::fmt::Debug for AuthenticatorClientPinParameters {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorClientPinParameters")
+            .field("pin_uv_auth_protocol", &self.pin_uv_auth_protocol)
+            .field("sub_command", &self.sub_command)
+            .field("key_agreement", &self.key_agreement)
+            .field("pin_uv_auth_param", &self.pin_uv_auth_param.as_ref().map(|p| TruncatedBytes(p)))
+            .field("new_pin_enc", &self.new_pin_enc.as_ref().map(|p| TruncatedBytes(p)))
+            .field("pin_hash_enc", &self.pin_hash_enc.as_ref().map(|p| TruncatedBytes(p)))
+            .field("permissions", &self.permissions)
+            .field("permissions_rp_id", &self.permissions_rp_id)
+            .finish()
+    }
 }
 
 impl TryFrom<cbor::Value> for AuthenticatorClientPinParameters {
@@ -727,6 +789,7 @@ mod test {
             pin_uv_auth_param: Some(vec![0x12, 0x34]),
             pin_uv_auth_protocol: Some(PinUvAuthProtocol::V1),
             enterprise_attestation: Some(2),
+            attestation_formats_preference: None,
         };
 
         assert_eq!(

@@ -21,6 +21,7 @@ pub use self::receive::MessageAssembler;
 #[cfg(not(feature = "std"))]
 use self::receive::MessageAssembler;
 pub use self::send::HidPacketIterator;
+use super::data_formats::TruncatedBytes;
 use super::status_code::Ctap2StatusCode;
 use crate::api::clock::Clock;
 use crate::env::Env;
@@ -131,7 +132,7 @@ pub enum ProcessedPacket<'a> {
 }
 
 /// An assembled CTAPHID command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Message {
     // Channel ID.
     pub cid: ChannelID,
@@ -139,6 +140,16 @@ pub struct Message {
     pub cmd: CtapHidCommand,
     // Bytes of the message.
     pub payload: Vec<u8>,
+}
+
+impl core::fmt::Debug for Message {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Message")
+            .field("cid", &format_args!("{:02x?}", self.cid))
+            .field("cmd", &self.cmd)
+            .field("payload", &TruncatedBytes(&self.payload))
+            .finish()
+    }
 }
 
 /// A keepalive packet reports the reason why a command does not finish.
@@ -409,7 +420,7 @@ impl<E: Env> CtapHid<E> {
 
     /// Splits the message and unwraps the result.
     ///
-    /// Unwrapping handles the case of payload lengths > 7609 bytes. All responses are fixed
+    /// Unwrapping handles the case of payload lengths > 65535 bytes. All responses are fixed
     /// length, with the exception of:
     /// - PING, but here output equals the (validated) input,
     /// - CBOR, where long responses are conceivable.
@@ -421,7 +432,7 @@ impl<E: Env> CtapHid<E> {
     pub fn split_message(message: Message) -> HidPacketIterator {
         let cid = message.cid;
         HidPacketIterator::new(message).unwrap_or_else(|| {
-            // The error payload is 1 <= 7609 bytes, so unwrap() is safe.
+            // The error payload is 1 <= 65535 bytes, so unwrap() is safe.
             HidPacketIterator::new(Message {
                 cid,
                 cmd: CtapHidCommand::Cbor,
@@ -604,7 +615,7 @@ mod test {
 
     #[test]
     fn test_split_message_too_large() {
-        let payload = vec![0xFF; 7609 + 1];
+        let payload = vec![0xFF; u16::MAX as usize + 1];
         let message = Message {
             cid: [0x12, 0x34, 0x56, 0x78],
             cmd: CtapHidCommand::Cbor,

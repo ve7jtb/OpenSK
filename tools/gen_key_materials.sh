@@ -180,8 +180,8 @@ generate_new_batch () {
 
   # Attestation key pair and certificate that will be embedded into the
   # firmware. The certificate will be signed by the Root CA.
-  local opensk_key=certs/${batch_id}.key
-  local opensk_cert_name=certs/${batch_id}
+  local fidont_key=certs/${batch_id}.key
+  local fidont_cert_name=certs/${batch_id}
 
   # x509v3 extension values are passed through environment variables.
   export OPENSK_AAGUID="${aaguid}"
@@ -202,9 +202,9 @@ generate_new_batch () {
   # Generate certificate request for the current batch
   "${openssl}" req \
     -new \
-    -config "tools/openssl/opensk.conf" \
-    -keyout "crypto_data/${opensk_key}" \
-    -out "crypto_data/${opensk_cert_name}.csr" \
+    -config "tools/openssl/fidont.conf" \
+    -keyout "crypto_data/${fidont_key}" \
+    -out "crypto_data/${fidont_cert_name}.csr" \
     "${openssl_keypwd}" \
     "${openssl_batch}" \
     -newkey "ec:${ecparams_file}"
@@ -212,20 +212,20 @@ generate_new_batch () {
   "${openssl}" ca \
     -config "tools/openssl/signing-ca.conf" \
     "${openssl_batch}" \
-    -in "crypto_data/${opensk_cert_name}.csr" \
-    -out "crypto_data/${opensk_cert_name}.pem" \
+    -in "crypto_data/${fidont_cert_name}.csr" \
+    -out "crypto_data/${fidont_cert_name}.pem" \
     -extensions "fido_key_ext"
 
   # Force symlink to the latest batch
-  ln -s -f "${opensk_cert_name}.pem" crypto_data/opensk_cert.pem
-  ln -s -f "${opensk_key}" crypto_data/opensk.key
+  ln -s -f "${fidont_cert_name}.pem" crypto_data/fidont_cert.pem
+  ln -s -f "${fidont_key}" crypto_data/fidont.key
 }
 
 if [ "X${1}" != "X" ]
 then
   ask_for_password=${2:-N}
   generate_pki $1 $ask_for_password
-  if [ "$1" = "Y" -o ! -f "crypto_data/opensk.key" -o ! -f "crypto_data/opensk_cert.pem" ]
+  if [ "$1" = "Y" -o ! -f "crypto_data/fidont.key" -o ! -f "crypto_data/fidont_cert.pem" ]
   then
     generate_new_batch $ask_for_password
   fi

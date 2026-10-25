@@ -38,9 +38,9 @@ impl EdSecretKey for SecretKey {
     type PublicKey = PublicKey;
     type Signature = Signature;
 
-    fn random(_rng: &mut impl Rng) -> Self {
-        // TODO: Use the rng argument.
-        SecretKey(Private::generate().unwrap())
+    fn random(rng: &mut impl Rng) -> Self {
+        let bytes = rng.gen_uniform_u8x32();
+        SecretKey(Private::import(&bytes).unwrap())
     }
 
     fn public_key(&self) -> Self::PublicKey {

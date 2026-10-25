@@ -141,8 +141,8 @@ impl<E: Env> MessageAssembler<E> {
                     } else {
                         // Update the last timestamp.
                         self.timer = env.clock().make_timer(TIMEOUT_DURATION_MS);
-                        // Increment the sequence number for the next packet.
-                        self.seq += 1;
+                        // Increment the sequence number for the next packet (wrapping modulo 128).
+                        self.seq = (self.seq + 1) & 0x7f;
                         Ok(self.append_payload(data))
                     }
                 }

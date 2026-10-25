@@ -83,6 +83,7 @@ fn enumerate_credentials_response<E: Env>(
         user_icon,
         cred_blob: _,
         large_blob_key,
+        third_party_payment,
     } = credential;
     let user = PublicKeyCredentialUserEntity {
         user_id: user_handle,
@@ -107,6 +108,7 @@ fn enumerate_credentials_response<E: Env>(
         total_credentials,
         cred_protect,
         large_blob_key,
+        third_party_payment: Some(third_party_payment),
         ..Default::default()
     })
 }
@@ -179,12 +181,15 @@ fn process_enumerate_credentials_begin<E: Env>(
     stateful_command_permission: &mut StatefulPermission<E>,
     client_pin: &mut ClientPin<E>,
     sub_command_params: CredentialManagementSubCommandParameters,
+    is_persistent_token: bool,
     channel: Channel,
 ) -> CtapResult<AuthenticatorCredentialManagementResponse> {
     let rp_id_hash = sub_command_params
         .rp_id_hash
         .ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
-    client_pin.has_no_or_rp_id_hash_permission(&rp_id_hash[..])?;
+    if !is_persistent_token {
+        client_pin.has_no_or_rp_id_hash_permission(&rp_id_hash[..])?;
+    }
     let mut iter_result = Ok(());
     let iter = storage::iter_credentials(env, &mut iter_result)?;
     let mut rp_credentials: Vec<usize> = iter
@@ -283,11 +288,38 @@ pub fn process_credential_management<E: Env>(
         }
     }
 
+    let mut is_persistent_token = false;
     match sub_command {
         CredentialManagementSubCommand::GetCredsMetadata
         | CredentialManagementSubCommand::EnumerateRpsBegin
-        | CredentialManagementSubCommand::EnumerateCredentialsBegin
-        | CredentialManagementSubCommand::DeleteCredential
+        | CredentialManagementSubCommand::EnumerateCredentialsBegin => {
+            let pin_uv_auth_param =
+                pin_uv_auth_param.ok_or(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED)?;
+            let pin_uv_auth_protocol =
+                pin_uv_auth_protocol.ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?;
+            let mut management_data = vec![sub_command as u8];
+            if let Some(sub_command_params) = sub_command_params.clone() {
+                super::cbor_write(sub_command_params.into(), &mut management_data)?;
+            }
+            if client_pin
+                .verify_pin_uv_auth_token(
+                    &management_data,
+                    &pin_uv_auth_param,
+                    pin_uv_auth_protocol,
+                )
+                .and_then(|()| client_pin.has_permission(PinPermission::CredentialManagement))
+                .is_err()
+            {
+                client_pin.verify_persistent_pin_uv_auth_token(
+                    env,
+                    &management_data,
+                    &pin_uv_auth_param,
+                    pin_uv_auth_protocol,
+                )?;
+                is_persistent_token = true;
+            }
+        }
+        CredentialManagementSubCommand::DeleteCredential
         | CredentialManagementSubCommand::UpdateUserInformation => {
             let pin_uv_auth_param =
                 pin_uv_auth_param.ok_or(Ctap2StatusCode::CTAP2_ERR_PUAT_REQUIRED)?;
@@ -311,11 +343,15 @@ pub fn process_credential_management<E: Env>(
 
     let response = match sub_command {
         CredentialManagementSubCommand::GetCredsMetadata => {
-            client_pin.has_no_rp_id_permission()?;
+            if !is_persistent_token {
+                client_pin.has_no_rp_id_permission()?;
+            }
             Some(process_get_creds_metadata(env)?)
         }
         CredentialManagementSubCommand::EnumerateRpsBegin => {
-            client_pin.has_no_rp_id_permission()?;
+            if !is_persistent_token {
+                client_pin.has_no_rp_id_permission()?;
+            }
             Some(process_enumerate_rps_begin(
                 env,
                 stateful_command_permission,
@@ -331,6 +367,7 @@ pub fn process_credential_management<E: Env>(
                 stateful_command_permission,
                 client_pin,
                 sub_command_params.ok_or(Ctap2StatusCode::CTAP2_ERR_MISSING_PARAMETER)?,
+                is_persistent_token,
                 channel,
             )?)
         }
@@ -387,6 +424,7 @@ mod test {
             user_icon: Some("icon".to_string()),
             cred_blob: None,
             large_blob_key: None,
+            third_party_payment: false,
         }
     }
 

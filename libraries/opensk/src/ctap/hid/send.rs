@@ -65,9 +65,9 @@ struct MessageSplitter {
 impl MessageSplitter {
     /// Try to split this message into an iterator of HID packets.
     ///
-    /// This fails if the message is too long to fit into a sequence of HID packets.
+    /// This fails if the message is too long to fit into the 16-bit BCNT field.
     pub fn new(message: Message) -> Option<MessageSplitter> {
-        if message.payload.len() > 7609 {
+        if message.payload.len() > u16::MAX as usize {
             None
         } else {
             // Cache the CID, as it is constant for all packets in this message.
@@ -136,7 +136,7 @@ impl Iterator for MessageSplitter {
                 // Send the next continuation packet, if any.
                 if self.i < payload_len {
                     self.packet[4] = seq;
-                    self.seq = Some(seq + 1);
+                    self.seq = Some((seq + 1) & 0x7f);
                     self.i += MessageSplitter::consume_data(
                         &mut self.packet[5..],
                         &self.message.payload[self.i..],
@@ -291,15 +291,46 @@ mod test {
     }
 
     #[test]
-    fn test_hid_packet_iterator_payload_one_too_large() {
-        let payload = vec![0xFF; (64 - 7) + 128 * (64 - 5) + 1];
-        assert_eq!(payload.len(), 0x1dba);
+    fn test_hid_packet_iterator_seq_wrap_around() {
+        let mut payload = vec![0xFF; 64 - 7];
+        for i in 0..130u8 {
+            payload.extend(vec![i.wrapping_add(1); 64 - 5]);
+        }
+
+        let payload_len = payload.len();
+        assert_eq!(payload_len, (64 - 7) + 130 * (64 - 5));
+
         let message = Message {
             cid: [0x12, 0x34, 0x56, 0x78],
             cmd: CtapHidCommand::Msg,
             payload,
         };
-        assert!(HidPacketIterator::new(message).is_none());
+
+        let mut init_packet: HidPacket = [0xFF; 64];
+        init_packet[..7].copy_from_slice(&[
+            0x12,
+            0x34,
+            0x56,
+            0x78,
+            0x83,
+            (payload_len >> 8) as u8,
+            payload_len as u8,
+        ]);
+        let mut expected_packets: Vec<HidPacket> = vec![init_packet];
+        for i in 0..130u8 {
+            let mut packet: HidPacket = [0; 64];
+            packet[0] = 0x12;
+            packet[1] = 0x34;
+            packet[2] = 0x56;
+            packet[3] = 0x78;
+            packet[4] = i & 0x7f;
+            for byte in packet.iter_mut().skip(5) {
+                *byte = i.wrapping_add(1);
+            }
+            expected_packets.push(packet);
+        }
+
+        assert_packet_output_equality(message, expected_packets);
     }
 
     #[test]

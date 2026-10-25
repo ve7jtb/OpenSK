@@ -15,7 +15,7 @@
 use super::data_formats::{
     AuthenticatorTransport, CoseKey, CredentialProtectionPolicy, PackedAttestationStatement,
     PublicKeyCredentialDescriptor, PublicKeyCredentialParameter, PublicKeyCredentialRpEntity,
-    PublicKeyCredentialUserEntity,
+    PublicKeyCredentialUserEntity, TruncatedBytes,
 };
 #[cfg(feature = "fingerprint")]
 use super::fingerprint::TemplateInfo;
@@ -66,13 +66,25 @@ impl From<ResponseData> for Option<cbor::Value> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct AuthenticatorMakeCredentialResponse {
     pub fmt: String,
     pub auth_data: Vec<u8>,
     pub att_stmt: PackedAttestationStatement,
     pub ep_att: Option<bool>,
     pub large_blob_key: Option<Vec<u8>>,
+}
+
+impl core::fmt::Debug for AuthenticatorMakeCredentialResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorMakeCredentialResponse")
+            .field("fmt", &self.fmt)
+            .field("auth_data", &TruncatedBytes(&self.auth_data))
+            .field("att_stmt", &self.att_stmt)
+            .field("ep_att", &self.ep_att)
+            .field("large_blob_key", &self.large_blob_key.as_ref().map(|k| TruncatedBytes(k)))
+            .finish()
+    }
 }
 
 impl From<AuthenticatorMakeCredentialResponse> for cbor::Value {
@@ -95,7 +107,7 @@ impl From<AuthenticatorMakeCredentialResponse> for cbor::Value {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct AuthenticatorGetAssertionResponse {
     pub credential: Option<PublicKeyCredentialDescriptor>,
     pub auth_data: Vec<u8>,
@@ -104,6 +116,19 @@ pub struct AuthenticatorGetAssertionResponse {
     pub number_of_credentials: Option<u64>,
     // 0x06: userSelected missing as we don't support displays.
     pub large_blob_key: Option<Vec<u8>>,
+}
+
+impl core::fmt::Debug for AuthenticatorGetAssertionResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorGetAssertionResponse")
+            .field("credential", &self.credential)
+            .field("auth_data", &TruncatedBytes(&self.auth_data))
+            .field("signature", &TruncatedBytes(&self.signature))
+            .field("user", &self.user)
+            .field("number_of_credentials", &self.number_of_credentials)
+            .field("large_blob_key", &self.large_blob_key.as_ref().map(|k| TruncatedBytes(k)))
+            .finish()
+    }
 }
 
 impl From<AuthenticatorGetAssertionResponse> for cbor::Value {
@@ -151,6 +176,10 @@ pub struct AuthenticatorGetInfoResponse {
     pub certifications: Option<Vec<(String, i64)>>,
     pub remaining_discoverable_credentials: Option<u64>,
     // - 0x15: vendorPrototypeConfigCommands missing as we don't support it.
+    pub attestation_formats: Option<Vec<String>>,
+    pub enc_identifier: Option<Vec<u8>>,
+    pub enc_cred_store_state: Option<Vec<u8>>,
+    pub authenticator_config_commands: Option<Vec<u64>>,
 }
 
 impl From<AuthenticatorGetInfoResponse> for cbor::Value {
@@ -176,6 +205,10 @@ impl From<AuthenticatorGetInfoResponse> for cbor::Value {
             uv_modality,
             certifications,
             remaining_discoverable_credentials,
+            attestation_formats,
+            enc_identifier,
+            enc_cred_store_state,
+            authenticator_config_commands,
         } = get_info_response;
 
         let options_cbor: Option<cbor::Value> = options.map(|options| {
@@ -215,17 +248,33 @@ impl From<AuthenticatorGetInfoResponse> for cbor::Value {
             0x12 => uv_modality,
             0x13 => certifications_cbor,
             0x14 => remaining_discoverable_credentials,
+            0x16 => attestation_formats.map(|vec| cbor_array_vec!(vec)),
+            0x19 => enc_identifier,
+            0x1E => enc_cred_store_state,
+            0x1F => authenticator_config_commands.map(|vec| cbor_array_vec!(vec)),
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct AuthenticatorClientPinResponse {
     pub key_agreement: Option<CoseKey>,
     pub pin_uv_auth_token: Option<Vec<u8>>,
     pub retries: Option<u64>,
     pub power_cycle_state: Option<bool>,
     pub uv_retries: Option<u64>,
+}
+
+impl core::fmt::Debug for AuthenticatorClientPinResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthenticatorClientPinResponse")
+            .field("key_agreement", &self.key_agreement)
+            .field("pin_uv_auth_token", &self.pin_uv_auth_token.as_ref().map(|t| TruncatedBytes(t)))
+            .field("retries", &self.retries)
+            .field("power_cycle_state", &self.power_cycle_state)
+            .field("uv_retries", &self.uv_retries)
+            .finish()
+    }
 }
 
 impl From<AuthenticatorClientPinResponse> for cbor::Value {
@@ -315,6 +364,7 @@ pub struct AuthenticatorCredentialManagementResponse {
     pub total_credentials: Option<u64>,
     pub cred_protect: Option<CredentialProtectionPolicy>,
     pub large_blob_key: Option<Vec<u8>>,
+    pub third_party_payment: Option<bool>,
 }
 
 impl From<AuthenticatorCredentialManagementResponse> for cbor::Value {
@@ -331,6 +381,7 @@ impl From<AuthenticatorCredentialManagementResponse> for cbor::Value {
             total_credentials,
             cred_protect,
             large_blob_key,
+            third_party_payment,
         } = cred_management_response;
 
         cbor_map_options! {
@@ -345,6 +396,7 @@ impl From<AuthenticatorCredentialManagementResponse> for cbor::Value {
             0x09 => total_credentials,
             0x0A => cred_protect,
             0x0B => large_blob_key,
+            0x0C => third_party_payment,
         }
     }
 }
@@ -364,6 +416,8 @@ mod test {
             sig: vec![0x55, 0x55, 0x55, 0x55],
             x5c: Some(vec![vec![0x5C, 0x5C, 0x5C, 0x5C]]),
             ecdaa_key_id: Some(vec![0xEC, 0xDA, 0x1D]),
+            pub_key: None,
+            mtc_cert: None,
         };
         let cbor_packed_attestation_statement = cbor_map! {
             "alg" => 1,
@@ -458,6 +512,10 @@ mod test {
             uv_modality: None,
             certifications: None,
             remaining_discoverable_credentials: None,
+            attestation_formats: None,
+            enc_identifier: None,
+            enc_cred_store_state: None,
+            authenticator_config_commands: None,
         };
         let response_cbor: Option<cbor::Value> =
             ResponseData::AuthenticatorGetInfo(get_info_response).into();
@@ -492,6 +550,14 @@ mod test {
             uv_modality: Some(1),
             certifications: Some(vec![(String::from("example-cert"), 1)]),
             remaining_discoverable_credentials: Some(150),
+            attestation_formats: Some(vec![
+                "mtc-mds".to_string(),
+                "mtc".to_string(),
+                "packed".to_string(),
+            ]),
+            enc_identifier: Some(vec![0x19; 32]),
+            enc_cred_store_state: Some(vec![0x1E; 32]),
+            authenticator_config_commands: None,
         };
         let response_cbor: Option<cbor::Value> =
             ResponseData::AuthenticatorGetInfo(get_info_response).into();
@@ -516,6 +582,9 @@ mod test {
             0x12 => 1,
             0x13 => cbor_map! {"example-cert" => 1},
             0x14 => 150,
+            0x16 => cbor_array!["mtc-mds", "mtc", "packed"],
+            0x19 => vec![0x19; 32],
+            0x1E => vec![0x1E; 32],
         };
         assert_eq!(response_cbor, Some(expected_cbor));
     }
@@ -639,6 +708,7 @@ mod test {
             total_credentials: Some(2),
             cred_protect: Some(CredentialProtectionPolicy::UserVerificationOptional),
             large_blob_key: Some(vec![0xBB; 64]),
+            third_party_payment: None,
         };
         let response_cbor: Option<cbor::Value> =
             ResponseData::AuthenticatorCredentialManagement(Some(cred_management_response)).into();

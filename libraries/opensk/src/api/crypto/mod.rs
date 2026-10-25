@@ -15,12 +15,28 @@
 pub mod aes256;
 pub mod ec_signing;
 pub mod ecdh;
+#[cfg(feature = "ed448")]
+pub mod ed448;
+#[cfg(feature = "es384")]
+pub mod es384;
+#[cfg(feature = "es512")]
+pub mod es512;
+#[cfg(feature = "es256k")]
+pub mod es256k;
+#[cfg(feature = "rs256")]
+pub mod rs256;
 #[cfg(feature = "software_crypto")]
 pub mod rust_crypto;
 #[cfg(feature = "software_crypto")]
 pub use rust_crypto as software_crypto;
 pub mod hkdf256;
 pub mod hmac256;
+#[cfg(feature = "mldsa")]
+pub mod mldsa;
+#[cfg(feature = "fndsa")]
+pub mod fndsa;
+#[cfg(feature = "pq_composite")]
+pub mod composite;
 pub mod sha256;
 
 use self::aes256::Aes256;
