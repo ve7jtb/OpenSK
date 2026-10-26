@@ -70,9 +70,27 @@ MLDSA_SPECS = {
 }
 
 FIDO_AAGUID_OID_DER = bytes.fromhex("060b2b0601040182e51c010104")  # 1.3.6.1.4.1.45724.1.1.4
+FIDO_FWVERSION_OID_DER = bytes.fromhex("060b2b0601040182e51c010103")  # 1.3.6.1.4.1.45724.1.1.3
 FIDO_SERIAL_OID_DER = bytes.fromhex("060b2b0601040182e51c010102")  # 1.3.6.1.4.1.45724.1.1.2
 
 FIDO_MTC_SUBTREE_CHECKPOINT_CONTEXT = b"FIDO-MTC-SUBTREE-CHECKPOINT-V1\x00\x00"
+
+
+def read_opensk_firmware_version(repo_root: str) -> int:
+    """Reads OPENSK_FIRMWARE_VERSION (or firmware_version() -> Some(N)) from src/env.rs."""
+    import re
+
+    env_rs_path = os.path.join(repo_root, "src", "env.rs")
+    if os.path.exists(env_rs_path):
+        with open(env_rs_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r"OPENSK_FIRMWARE_VERSION\s*:\s*u64\s*=\s*(0x[0-9a-fA-F_]+|\d+)", text)
+        if m:
+            return int(m.group(1).replace("_", ""), 0)
+        m2 = re.search(r"fn\s+firmware_version\s*\([^)]*\)\s*->\s*Option<u64>\s*\{\s*Some\((0x[0-9a-fA-F_]+|\d+)\)", text)
+        if m2:
+            return int(m2.group(1).replace("_", ""), 0)
+    return 256
 
 
 # ============================================================================
@@ -706,9 +724,12 @@ def generate_lms_hierarchy_and_batch_certs(
     num_intermediates: int = 4,
     active_intermediate_idx: int = 0,
     enterprise_serial: str = "123456",
+    fw_version: int | None = None,
     force_regen_ca: bool = False,
     update_mds: bool = True,
 ) -> dict:
+    if fw_version is None:
+        fw_version = read_opensk_firmware_version(repo_root)
     lms_dir = os.path.join(repo_root, "crypto_data_lms")
     root_dir = os.path.join(lms_dir, "root_ca")
     int_dir = os.path.join(lms_dir, "intermediates")
@@ -846,6 +867,9 @@ def generate_lms_hierarchy_and_batch_certs(
     fido_aaguid_ext = der_ext(
         FIDO_AAGUID_OID_DER, False, der_octet_string(aaguid_bytes)
     )
+    fido_fwversion_ext = der_ext(
+        FIDO_FWVERSION_OID_DER, False, der_octet_string(struct.pack(">I", fw_version))
+    )
     issued_batch_certs = {}
 
     for dir_name, expected_alg, leaf_q, cert_serial, is_enterprise in batch_specs:
@@ -883,6 +907,7 @@ def generate_lms_hierarchy_and_batch_certs(
             der_ext_key_usage_digital_sig(),
             der_ext_aki(active_int_ski),
             fido_aaguid_ext,
+            fido_fwversion_ext,
         ]
         if is_enterprise:
             serial_utf8 = enterprise_serial.encode("utf-8")
@@ -918,9 +943,13 @@ def generate_lms_hierarchy_and_batch_certs(
             "signedByIntermediateIndex": active_intermediate_idx,
             "intermediateLeafQ": used_q,
             "certSerialHex": f"0x{cert_serial:04x}",
+            "firmwareVersion": fw_version,
+            "fidoFirmwareVersionHex": f"{fw_version:08x}",
             "derLengthBytes": len(batch_cert_der),
             "pemFile": cert_pem_path,
         }
+        if is_enterprise:
+            issued_batch_certs[dir_name]["enterpriseSerial"] = enterprise_serial
 
     # ------------------------------------------------------------------------
     # Step 4: Sign MTC Subtree Checkpoints (alg: -46 HSS-LMS) & Update MDS JSONs
@@ -964,7 +993,7 @@ def generate_lms_hierarchy_and_batch_certs(
                 for bk in ta.get("batchKeys", []):
                     bk.setdefault("notBefore", int(not_before_dt.timestamp()))
                     bk["notAfter"] = 253402300799
-                    bk["firmwareVersion"] = 256
+                    bk["firmwareVersion"] = fw_version
                 for st in ta.get("subtrees", []):
                     cp_bytes = encode_mtc_subtree_checkpoint(
                         ca_id_bytes,
@@ -994,17 +1023,16 @@ def generate_lms_hierarchy_and_batch_certs(
                 continue
             with open(mds_path, "r", encoding="utf-8") as f:
                 mds = json.load(f)
-            mds["authenticatorVersion"] = 256
+            mds["authenticatorVersion"] = fw_version
             if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
-                mds["authenticatorGetInfo"]["firmwareVersion"] = 256
+                mds["authenticatorGetInfo"]["firmwareVersion"] = fw_version
             mds["attestationRootCertificates"] = mds_root_certs_b64
             for ta in mds.get("mtcTrustAnchors", []):
                 ca_id_str = ta.get("caId", "")
                 for bk in ta.get("batchKeys", []):
                     bk.setdefault("notBefore", int(not_before_dt.timestamp()))
                     bk["notAfter"] = 253402300799
-                    bk["firmwareVersion"] = 256
-                    bk["firmwareVersion"] = 256
+                    bk["firmwareVersion"] = fw_version
                 if ca_id_str in loaded_tas:
                     ta["maxBatchWindow"] = loaded_tas[ca_id_str]["maxBatchWindow"]
                     ta["subtrees"] = loaded_tas[ca_id_str]["subtrees"]
@@ -1168,6 +1196,12 @@ def main():
         help='FIDO Enterprise serial number for crypto_data_enterprise/fidont_cert.pem (default: "123456").',
     )
     parser.add_argument(
+        "--fw-version",
+        type=int,
+        default=None,
+        help="Firmware version integer (default: read OPENSK_FIRMWARE_VERSION from src/env.rs).",
+    )
+    parser.add_argument(
         "--force-regen-ca",
         action="store_true",
         default=False,
@@ -1197,6 +1231,7 @@ def main():
         num_intermediates=args.num_intermediates,
         active_intermediate_idx=args.intermediate_index,
         enterprise_serial=args.enterprise_serial,
+        fw_version=args.fw_version,
         force_regen_ca=args.force_regen_ca,
         update_mds=not args.no_update_mds,
     )

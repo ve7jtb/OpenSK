@@ -29,6 +29,10 @@ mod user_presence;
 mod vendor;
 mod write;
 
+/// Firmware version reported in `authenticatorGetInfo` (`0x0E`), X.509 (`1.3.6.1.4.1.45724.1.1.3`),
+/// FIDO MDS (`authenticatorVersion` / `firmwareVersion`), and MTC (`FidoMtcLogEntry.firmware_version`).
+pub const OPENSK_FIRMWARE_VERSION: u64 = 256;
+
 pub(crate) fn init() -> WasefireEnv {
     WasefireEnv {
         customization: DEFAULT_CUSTOMIZATION,
@@ -103,7 +107,7 @@ impl Env for WasefireEnv {
     }
 
     fn firmware_version(&self) -> Option<u64> {
-        Some(256)
+        Some(OPENSK_FIRMWARE_VERSION)
     }
 
     fn process_vendor_command(
