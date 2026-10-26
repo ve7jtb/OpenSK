@@ -15,7 +15,7 @@
 
 set -e
 
-FEATURES="ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,up-always-true,debug"
+FEATURES="ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,debug"
 
 usage() {
   echo "Usage: $0 [options] <target>"

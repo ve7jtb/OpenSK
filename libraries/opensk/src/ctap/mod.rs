@@ -534,6 +534,13 @@ pub fn check_user_presence<E: Env>(env: &mut E, channel: Channel) -> CtapResult<
     const TIMEOUT_ERROR: Ctap2StatusCode = Ctap2StatusCode::CTAP2_ERR_USER_ACTION_TIMEOUT;
 
     env.user_presence().check_init();
+    let (cid, transport) = match channel {
+        Channel::MainHid(cid) => (cid, Transport::MainHid),
+        #[cfg(feature = "vendor_hid")]
+        Channel::VendorHid(cid) => (cid, Transport::VendorHid),
+    };
+    let keepalive_msg = CtapHid::<E>::keepalive(cid, KeepaliveStatus::UpNeeded);
+    let _ = send_packets(env, transport.usb_endpoint(), keepalive_msg);
     let loop_timer = env.clock().make_timer(TOUCH_TIMEOUT_MS);
 
     // We don't use the '?' operator to always reach check_complete(...).

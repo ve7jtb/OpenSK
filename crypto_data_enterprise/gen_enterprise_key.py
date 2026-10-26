@@ -1049,6 +1049,7 @@ def main():
         "mtcTrustAnchor": trust_anchor,
         "enterpriseInventoryManifest": {
             "caId": b64url_encode(ca_id),
+            "aaguid": str(aaguid_obj),
             "batchKeys": [
                 {
                     "serial": mtc_serial,
@@ -1065,6 +1066,11 @@ def main():
     info_out_path = os.path.join(ent_dir, "mtc_enterprise_info.json")
     with open(info_out_path, "w", encoding="utf-8") as f:
         json.dump(info_json, f, indent=2)
+
+    manifest_out_path = os.path.join(ent_dir, "enterprise_inventory_manifest.json")
+    with open(manifest_out_path, "w", encoding="utf-8") as f:
+        json.dump(info_json["enterpriseInventoryManifest"], f, indent=2)
+        f.write("\n")
 
     print(f"[OK] Generated/Verified Enterprise CA ({active_root_alg_label} + ES384) & signed Enterprise X.509 cert ({args.alg}) in {ent_dir}")
     print(f"     FIDO Serial Number ({FIDO_SERIAL_OID}): \"{args.serial}\" (DER OCTET STRING: {fido_serial_ext_der.hex()})")

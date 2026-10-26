@@ -60,6 +60,20 @@ def info(msg):
     )
 
 
+def trigger_opensk_up(status_code):
+    if status_code == 2:  # STATUS_UPNEEDED
+        vcom_port = "/dev/cu.usbmodem0010502031701"
+        if os.path.exists(vcom_port):
+            try:
+                fd = os.open(vcom_port, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+                try:
+                    os.write(fd, b"\x00")
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+
+
 def get_opensk_devices(batch_mode):
     devices = []
     for dev in hid.CtapHidDevice.list_devices():
@@ -986,22 +1000,26 @@ def main(args):
             result = authenticator.send_cbor(
                 OPENSK_VENDOR_CONFIGURE,
                 data=cbor_data,
+                on_keepalive=trigger_opensk_up,
             )
             if extra_cert_chunk:
                 result = authenticator.send_cbor(
                     OPENSK_VENDOR_CONFIGURE,
                     data={3: extra_cert_chunk, 4: 1},
+                    on_keepalive=trigger_opensk_up,
                 )
             if ent_cbor_data is not None:
                 info("Programming Enterprise Attestation key + dual (mtcCert + x5c) certificate (touch if prompted)...")
                 result = authenticator.send_cbor(
                     OPENSK_VENDOR_CONFIGURE,
                     data=ent_cbor_data,
+                    on_keepalive=trigger_opensk_up,
                 )
                 if ent_extra_cert_chunk:
                     result = authenticator.send_cbor(
                         OPENSK_VENDOR_CONFIGURE,
                         data={3: ent_extra_cert_chunk, 4: 2},
+                        on_keepalive=trigger_opensk_up,
                     )
             status = {"cert": result[1], "pkey": result[2], "aaguid": result[3]}
             responses.append(status)
