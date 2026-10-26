@@ -95,14 +95,7 @@ def cbor_encode(obj) -> bytes:
 
 
 def extract_cose_public_key_from_der(cert_der: bytes) -> tuple[int, bytes]:
-    """Extracts (cose_alg, canonical_cbor_cose_key) from an HSS-LMS, ML-DSA, or P-256 X.509 DER cert."""
-    # Check HSS-LMS OID 1.2.840.113549.1.9.16.3.17 (30 0d 06 0b 2a 86 48 86 f7 0d 01 09 10 03 11 03 3d 00 <60B HSS pubkey>)
-    hss_pattern = bytes.fromhex("300d060b2a864886f70d0109100311033d00")
-    idx = cert_der.find(hss_pattern)
-    if idx != -1 and len(cert_der) >= idx + len(hss_pattern) + 60:
-        pk_start = idx + len(hss_pattern)
-        pk_bytes = cert_der[pk_start : pk_start + 60]
-        return -46, cbor_encode({1: 7, 3: -46, -1: pk_bytes})
+    """Extracts (cose_alg, canonical_cbor_cose_key) from an ML-DSA or P-256 X.509 DER cert."""
     for _alg_name, (oid_bytes, cose_alg, pk_len) in MLDSA_SPECS.items():
         bit_string_tag = bytes(
             [0x03, 0x82, ((pk_len + 1) >> 8) & 0xFF, (pk_len + 1) & 0xFF, 0x00]
@@ -331,20 +324,8 @@ def verify_metadata_enterprise_ca_id(
             )
             verified_by_idx = None
             verified_subject = None
-            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            tools_dir = os.path.join(repo_root, "tools")
-            if tools_dir not in os.sys.path:
-                os.sys.path.insert(0, tools_dir)
-            import gen_lms_certs
 
             for idx, cert_b64 in enumerate(root_certs_b64):
-                cert_der = base64.b64decode(cert_b64)
-                hss_pub = gen_lms_certs.extract_hss_pubkey_from_cert_der(cert_der)
-                if hss_pub is not None and subtree.get("alg") == -46:
-                    if gen_lms_certs.verify_hss_lms_signature(hss_pub, checkpoint, sig_bytes):
-                        verified_by_idx = idx
-                        verified_subject = f"HSS-LMS CA cert[{idx}] ({len(cert_der)} B DER)"
-                        break
                 pem_lines = [
                     "-----BEGIN CERTIFICATE-----",
                     *[cert_b64[i : i + 64] for i in range(0, len(cert_b64), 64)],
@@ -556,12 +537,6 @@ def main():
         help="Firmware version integer committed in the FidoMtcLogEntry and X.509 cert (default: read from src/env.rs).",
     )
     parser.add_argument(
-        "--ca-type",
-        default="lms",
-        choices=["lms", "mldsa"],
-        help="CA hierarchy type used to sign PQ batch/enterprise certs and MTC checkpoints (default: lms).",
-    )
-    parser.add_argument(
         "--reuse-key",
         action="store_true",
         default=False,
@@ -610,192 +585,153 @@ def main():
     fido_fwversion_ext_der = b"\x04\x04" + fw_version_bytes
     fido_fwversion_oid_der = bytes.fromhex("060b2b0601040182e51c010103")
 
-    if args.ca_type == "lms":
-        tools_dir = os.path.join(repo_root, "tools")
-        if tools_dir not in sys.path:
-            sys.path.insert(0, tools_dir)
-        import gen_lms_certs as lms_mod
+    # 2a. Generate (or reuse) the ML-DSA-87 Enterprise Root CA key & self-signed certificate
+    if not (args.reuse_key and os.path.exists(root_key_path) and os.path.exists(root_cert_path)):
+        root_cmd = [
+            "openssl",
+            "req",
+            "-x509",
+            "-nodes",
+            "-days",
+            "3650",
+            "-config",
+            cnf_path,
+            "-reqexts",
+            "root_ca_extensions",
+            "-extensions",
+            "root_ca_extensions",
+            "-subj",
+            "/CN=Fidont Enterprise Root CA/O=John Bradley/OU=Authenticator Attestation/C=CA",
+        ]
+        if args.reuse_key and os.path.exists(root_key_path):
+            root_cmd.extend(["-key", root_key_path])
+        else:
+            root_cmd.extend(["-newkey", args.root_alg, "-keyout", root_key_path])
+        root_cmd.extend(["-out", root_cert_path])
+        subprocess.run(root_cmd, check=True)
 
-        lms_int_pem = os.path.join(repo_root, "crypto_data_lms", "intermediates", "lms_intermediate_0.pem")
-        lms_int_state = os.path.join(repo_root, "crypto_data_lms", "intermediates", "lms_intermediate_0.state.json")
+    # 2b. Check if existing fidont_cert.pem already has the requested FIDO serial & fwVersion and verifies under Root CA
+    reuse_existing_leaf_cert = False
+    if args.reuse_key and os.path.exists(key_path) and os.path.exists(cert_path):
+        existing_der = subprocess.check_output(
+            ["openssl", "x509", "-in", cert_path, "-outform", "DER"]
+        )
+        verify_res = subprocess.run(
+            ["openssl", "verify", "-CAfile", root_cert_path, cert_path],
+            capture_output=True,
+        )
+        if (
+            verify_res.returncode == 0
+            and fido_serial_ext_der in existing_der
+            and fido_fwversion_oid_der in existing_der
+            and fido_fwversion_ext_der in existing_der
+        ):
+            reuse_existing_leaf_cert = True
 
-        # Ensure enterprise key exists before generating LMS batch certs
-        if not (args.reuse_key and os.path.exists(key_path)):
-            csr_cmd = ["openssl", "req", "-new", "-nodes", "-config", cnf_path]
+    if not reuse_existing_leaf_cert:
+        csr_cmd = ["openssl", "req", "-new", "-nodes", "-config", cnf_path]
+        if args.reuse_key and os.path.exists(key_path):
+            csr_cmd.extend(["-key", key_path])
+        else:
             if args.alg == "P-256":
                 csr_cmd.extend(["-newkey", f"ec:{ecparams_path}", "-keyout", key_path])
             else:
                 csr_cmd.extend(["-newkey", args.alg, "-keyout", key_path])
-            csr_cmd.extend(["-out", csr_path])
-            subprocess.run(csr_cmd, check=True)
+        csr_cmd.extend(["-out", csr_path])
+        subprocess.run(csr_cmd, check=True)
 
-        if not (os.path.exists(lms_int_pem) and os.path.exists(lms_int_state)):
-            lms_mod.generate_lms_hierarchy_and_batch_certs(
-                repo_root, enterprise_serial=args.serial, fw_version=args.fw_version
+        sign_cmd = [
+            "openssl",
+            "x509",
+            "-req",
+            "-in",
+            csr_path,
+            "-CA",
+            root_cert_path,
+            "-CAkey",
+            root_key_path,
+            "-CAcreateserial",
+            "-days",
+            "3650",
+            "-extfile",
+            cnf_path,
+            "-extensions",
+            "fido_extensions",
+            "-out",
+            cert_path,
+        ]
+        subprocess.run(sign_cmd, check=True)
+
+    # 2c. Ensure all 3 non-enterprise ML-DSA batch X.509 certificates (mldsa44, mldsa65, mldsa87)
+    # are also signed by the ML-DSA-87 Root CA (enterprise_root_ca.pem)
+    for batch_dir_name in ["crypto_data_mldsa44", "crypto_data_mldsa65", "crypto_data_mldsa87"]:
+        b_dir = os.path.join(repo_root, batch_dir_name)
+        b_key = os.path.join(b_dir, "fidont.key")
+        b_cnf = os.path.join(b_dir, "fidont_ext.cnf")
+        b_csr = os.path.join(b_dir, "fidont.csr")
+        b_cert = os.path.join(b_dir, "fidont_cert.pem")
+        if not (os.path.exists(b_key) and os.path.exists(b_cnf)):
+            continue
+        needs_signing = True
+        if args.reuse_key and os.path.exists(b_cert):
+            b_der = subprocess.check_output(
+                ["openssl", "x509", "-in", b_cert, "-outform", "DER"]
             )
-
-        root_cert_path = lms_int_pem
-        root_key_path = lms_int_state
-        int_ca = lms_mod.StatefulHssLmsCa.load(lms_int_state)
-        int_hss_pub = int_ca.hss_public_key_bytes()
-
-        reuse_existing_leaf_cert = False
-        if args.reuse_key and os.path.exists(cert_path):
-            existing_der = subprocess.check_output(
-                ["openssl", "x509", "-in", cert_path, "-outform", "DER"]
-            )
-            if (
-                fido_serial_ext_der in existing_der
-                and fido_fwversion_oid_der in existing_der
-                and fido_fwversion_ext_der in existing_der
-                and lms_mod.verify_lms_x509_cert_der(existing_der, int_hss_pub)
-            ):
-                reuse_existing_leaf_cert = True
-
-        if not reuse_existing_leaf_cert:
-            lms_mod.generate_lms_hierarchy_and_batch_certs(
-                repo_root, enterprise_serial=args.serial, fw_version=args.fw_version
-            )
-            int_ca = lms_mod.StatefulHssLmsCa.load(lms_int_state)
-            int_hss_pub = int_ca.hss_public_key_bytes()
-    else:
-        # 2a. Generate (or reuse) the ML-DSA-87 Enterprise Root CA key & self-signed certificate
-        if not (args.reuse_key and os.path.exists(root_key_path) and os.path.exists(root_cert_path)):
-            root_cmd = [
-                "openssl",
-                "req",
-                "-x509",
-                "-nodes",
-                "-days",
-                "3650",
-                "-config",
-                cnf_path,
-                "-reqexts",
-                "root_ca_extensions",
-                "-extensions",
-                "root_ca_extensions",
-                "-subj",
-                "/CN=Fidont Enterprise Root CA/O=John Bradley/OU=Authenticator Attestation/C=CA",
-            ]
-            if args.reuse_key and os.path.exists(root_key_path):
-                root_cmd.extend(["-key", root_key_path])
-            else:
-                root_cmd.extend(["-newkey", args.root_alg, "-keyout", root_key_path])
-            root_cmd.extend(["-out", root_cert_path])
-            subprocess.run(root_cmd, check=True)
-
-        # 2b. Check if existing fidont_cert.pem already has the requested FIDO serial and verifies under Root CA
-        reuse_existing_leaf_cert = False
-        if args.reuse_key and os.path.exists(key_path) and os.path.exists(cert_path):
-            existing_der = subprocess.check_output(
-                ["openssl", "x509", "-in", cert_path, "-outform", "DER"]
-            )
-            verify_res = subprocess.run(
-                ["openssl", "verify", "-CAfile", root_cert_path, cert_path],
+            iss_sub = subprocess.check_output(
+                ["openssl", "x509", "-in", b_cert, "-noout", "-issuer", "-subject"],
+                text=True,
+            ).splitlines()
+            v_res = subprocess.run(
+                ["openssl", "verify", "-CAfile", root_cert_path, b_cert],
                 capture_output=True,
             )
-            if verify_res.returncode == 0 and fido_serial_ext_der in existing_der:
-                reuse_existing_leaf_cert = True
-
-        if not reuse_existing_leaf_cert:
-            csr_cmd = ["openssl", "req", "-new", "-nodes", "-config", cnf_path]
-            if args.reuse_key and os.path.exists(key_path):
-                csr_cmd.extend(["-key", key_path])
-            else:
-                if args.alg == "P-256":
-                    csr_cmd.extend(["-newkey", f"ec:{ecparams_path}", "-keyout", key_path])
-                else:
-                    csr_cmd.extend(["-newkey", args.alg, "-keyout", key_path])
-            csr_cmd.extend(["-out", csr_path])
-            subprocess.run(csr_cmd, check=True)
-
-            sign_cmd = [
-                "openssl",
-                "x509",
-                "-req",
-                "-in",
-                csr_path,
-                "-CA",
-                root_cert_path,
-                "-CAkey",
-                root_key_path,
-                "-CAcreateserial",
-                "-days",
-                "3650",
-                "-extfile",
-                cnf_path,
-                "-extensions",
-                "fido_extensions",
-                "-out",
-                cert_path,
-            ]
-            subprocess.run(sign_cmd, check=True)
-
-        # 2c. Ensure all 3 non-enterprise ML-DSA batch X.509 certificates (mldsa44, mldsa65, mldsa87)
-        # are also signed by the ML-DSA-87 Root CA (enterprise_root_ca.pem)
-        for batch_dir_name in ["crypto_data_mldsa44", "crypto_data_mldsa65", "crypto_data_mldsa87"]:
-            b_dir = os.path.join(repo_root, batch_dir_name)
-            b_key = os.path.join(b_dir, "fidont.key")
-            b_cnf = os.path.join(b_dir, "fidont_ext.cnf")
-            b_csr = os.path.join(b_dir, "fidont.csr")
-            b_cert = os.path.join(b_dir, "fidont_cert.pem")
-            if not (os.path.exists(b_key) and os.path.exists(b_cnf)):
-                continue
-            needs_signing = True
-            if args.reuse_key and os.path.exists(b_cert):
-                iss_sub = subprocess.check_output(
-                    ["openssl", "x509", "-in", b_cert, "-noout", "-issuer", "-subject"],
-                    text=True,
-                ).splitlines()
-                v_res = subprocess.run(
-                    ["openssl", "verify", "-CAfile", root_cert_path, b_cert],
-                    capture_output=True,
-                )
-                if (
-                    v_res.returncode == 0
-                    and len(iss_sub) == 2
-                    and iss_sub[0].split("=", 1)[1] != iss_sub[1].split("=", 1)[1]
-                ):
-                    needs_signing = False
-            if needs_signing:
-                subprocess.run(
-                    [
-                        "openssl",
-                        "req",
-                        "-new",
-                        "-nodes",
-                        "-key",
-                        b_key,
-                        "-config",
-                        b_cnf,
-                        "-out",
-                        b_csr,
-                    ],
-                    check=True,
-                )
-                subprocess.run(
-                    [
-                        "openssl",
-                        "x509",
-                        "-req",
-                        "-in",
-                        b_csr,
-                        "-CA",
-                        root_cert_path,
-                        "-CAkey",
-                        root_key_path,
-                        "-CAcreateserial",
-                        "-days",
-                        "3650",
-                        "-extfile",
-                        b_cnf,
-                        "-extensions",
-                        "fido_extensions",
-                        "-out",
-                        b_cert,
-                    ],
-                    check=True,
-                )
+            if (
+                v_res.returncode == 0
+                and len(iss_sub) == 2
+                and iss_sub[0].split("=", 1)[1] != iss_sub[1].split("=", 1)[1]
+                and fido_fwversion_oid_der in b_der
+                and fido_fwversion_ext_der in b_der
+            ):
+                needs_signing = False
+        if needs_signing:
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-new",
+                    "-nodes",
+                    "-key",
+                    b_key,
+                    "-config",
+                    b_cnf,
+                    "-out",
+                    b_csr,
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "openssl",
+                    "x509",
+                    "-req",
+                    "-in",
+                    b_csr,
+                    "-CA",
+                    root_cert_path,
+                    "-CAkey",
+                    root_key_path,
+                    "-CAcreateserial",
+                    "-days",
+                    "3650",
+                    "-extfile",
+                    b_cnf,
+                    "-extensions",
+                    "fido_extensions",
+                    "-out",
+                    b_cert,
+                ],
+                check=True,
+            )
 
     # 2d. Generate (or reuse) alternate non-PQ ES384 Enterprise Root CA and sign the ES256 batch key (crypto_data/fidont_cert.pem)
     es384_root_key_path = os.path.join(ent_dir, "enterprise_root_ca_es384.key")
@@ -968,30 +904,14 @@ def main():
         0, batch_size, inclusion_path, extensions=serial_bytes
     )
 
-    # 4b. Sign the FidoMtcSubtreeCheckpoint with the active CA (LMS Intermediate CA or ML-DSA-87 Root CA)
+    # 4b. Sign the FidoMtcSubtreeCheckpoint with the stateless ML-DSA-87 Root CA
     checkpoint_bytes = encode_mtc_subtree_checkpoint(
         ca_id, args.log_number, 0, batch_size, landmark_root
     )
     ta_out_path = os.path.join(ent_dir, "mtc_trust_anchor.json")
-    checkpoint_sig = None
-    if args.ca_type == "lms":
-        if args.reuse_key and os.path.exists(ta_out_path):
-            try:
-                with open(ta_out_path, "r", encoding="utf-8") as tf:
-                    existing_ta = json.load(tf)
-                st0 = existing_ta["subtrees"][0]
-                if st0.get("alg") == -46:
-                    cand_sig = b64url_decode(st0["signature"])
-                    if lms_mod.verify_hss_lms_signature(int_hss_pub, checkpoint_bytes, cand_sig):
-                        checkpoint_sig = cand_sig
-            except Exception:
-                checkpoint_sig = None
-        if checkpoint_sig is None:
-            _, checkpoint_sig = int_ca.sign_hss(checkpoint_bytes, explicit_q=5)
-    else:
-        checkpoint_sig = sign_and_verify_subtree_checkpoint(
-            root_key_path, root_cert_path, checkpoint_bytes
-        )
+    checkpoint_sig = sign_and_verify_subtree_checkpoint(
+        root_key_path, root_cert_path, checkpoint_bytes
+    )
 
     mtc_cert_map = {
         "caId": ca_id,
@@ -1048,25 +968,16 @@ def main():
                 int(st["end"]),
                 b64url_decode(st["rootHash"]),
             )
-            st_sig = None
-            if args.ca_type == "lms":
-                if args.reuse_key and st.get("alg") == -46 and "signature" in st:
-                    cand = b64url_decode(st["signature"])
-                    if lms_mod.verify_hss_lms_signature(int_hss_pub, st_cp, cand):
-                        st_sig = cand
-                if st_sig is None:
-                    _, st_sig = int_ca.sign_hss(st_cp, explicit_q=4)
-            else:
-                st_sig = sign_and_verify_subtree_checkpoint(
-                    root_key_path, root_cert_path, st_cp
-                )
+            st_sig = sign_and_verify_subtree_checkpoint(
+                root_key_path, root_cert_path, st_cp
+            )
             st["alg"] = root_cose_alg
             st["signature"] = b64url_encode(st_sig)
         with open(batch_ta_path, "w", encoding="utf-8") as btf:
             json.dump(batch_ta, btf, indent=2)
             btf.write("\n")
 
-    active_root_alg_label = "HSS-LMS (LMS_SHA256_M32_H5 + LMOTS_SHA256_N32_W8)" if args.ca_type == "lms" else args.root_alg
+    active_root_alg_label = args.root_alg
     info_json = {
         "description": "Fidont Enterprise Single-Device Attestation Key, X.509 Certificate, and MTC Info",
         "algorithm": args.alg,

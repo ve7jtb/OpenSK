@@ -202,7 +202,43 @@ def sync_mds_metadata_files(
     batch_trust_anchor: dict | None = None,
     ent_trust_anchor: dict | None = None,
 ) -> None:
-    """Propagates firmwareVersion, batch trust anchor, and enterprise trust anchor into metadata/*.json."""
+    """Propagates firmwareVersion, attestationRootCertificates, batch trust anchor, and enterprise trust anchor into metadata/*.json."""
+    default_ent_dir = os.path.join(repo_root, "crypto_data_enterprise")
+    pq_root_pem = os.path.join(default_ent_dir, "enterprise_root_ca.pem")
+    es384_root_pem = os.path.join(default_ent_dir, "enterprise_root_ca_es384.pem")
+    root_certs_b64 = []
+    for r_pem in [pq_root_pem, es384_root_pem]:
+        if os.path.exists(r_pem):
+            with open(r_pem, "rb") as rf:
+                r_cert = x509.load_pem_x509_certificate(rf.read())
+            r_der = r_cert.public_bytes(serialization.Encoding.DER)
+            root_certs_b64.append(base64.b64encode(r_der).decode("ascii"))
+
+    canonical_auth_algs = [
+        "secp256r1_ecdsa_sha256_raw",
+        "secp384r1_ecdsa_sha384_raw",
+        "secp521r1_ecdsa_sha512_raw",
+        "secp256k1_ecdsa_sha256_raw",
+        "ed25519_eddsa_sha512_raw",
+        "ed448_eddsa_shake256_raw",
+        "mldsa44_mldsa_raw",
+        "mldsa65_mldsa_raw",
+        "mldsa87_mldsa_raw",
+        "mldsa44_es256_raw",
+        "mldsa65_es256_raw",
+        "mldsa87_es384_raw",
+        "mldsa44_ed25519_raw",
+        "mldsa65_ed25519_raw",
+        "mldsa87_ed448_raw",
+        "fndsa512_fndsa_raw",
+        "fndsa1024_fndsa_raw",
+        "rsassa_pkcsv15_sha256_raw",
+    ]
+    canonical_get_info_algs = [
+        {"type": "public-key", "alg": alg_id}
+        for alg_id in [-7, -35, -36, -47, -8, -53, -48, -49, -50, -54, -55, -56, -57, -58, -59, -60, -61, -257]
+    ]
+
     mds_files = [
         "metadata_mldsa44_mtc.json",
         "metadata_mldsa65_mtc.json",
@@ -215,25 +251,32 @@ def sync_mds_metadata_files(
             continue
         with open(mds_path, "r", encoding="utf-8") as f:
             mds = json.load(f)
+        mds["authenticationAlgorithms"] = canonical_auth_algs
+        if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
+            mds["authenticatorGetInfo"]["algorithms"] = canonical_get_info_algs
         if fw_version is not None:
             mds["authenticatorVersion"] = fw_version
             if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
                 mds["authenticatorGetInfo"]["firmwareVersion"] = fw_version
+        if root_certs_b64:
+            mds["attestationRootCertificates"] = root_certs_b64
         for ta in mds.get("mtcTrustAnchors", []):
             ca_id_str = ta.get("caId")
-            if fw_version is not None:
-                for bk in ta.get("batchKeys", []):
-                    bk["firmwareVersion"] = fw_version
             if batch_trust_anchor is not None and ca_id_str == batch_trust_anchor.get("caId"):
                 ta["maxBatchWindow"] = batch_trust_anchor["maxBatchWindow"]
                 ta["subtrees"] = batch_trust_anchor["subtrees"]
+                if "batchKeys" in batch_trust_anchor:
+                    ta["batchKeys"] = batch_trust_anchor["batchKeys"]
             elif ent_trust_anchor is not None and ca_id_str == ent_trust_anchor.get("caId"):
                 ta["maxBatchWindow"] = ent_trust_anchor["maxBatchWindow"]
                 ta["subtrees"] = ent_trust_anchor["subtrees"]
+            if fw_version is not None:
+                for bk in ta.get("batchKeys", []):
+                    bk["firmwareVersion"] = fw_version
         with open(mds_path, "w", encoding="utf-8") as f:
             json.dump(mds, f, indent=2)
             f.write("\n")
-    info("Synchronized metadata/metadata_mldsa*.json with updated firmwareVersion and MTC trust anchors.")
+    info("Synchronized metadata/metadata_mldsa*.json with stateless Root CAs, firmwareVersion, and MTC trust anchors.")
 
 
 def fido_mtc_leaf_hash(
@@ -330,24 +373,12 @@ def encode_mtc_subtree_checkpoint(ca_id, log_number, start, end, root_hash):
 
 
 def sign_subtree_checkpoint_with_root_ca(
-    ca_id, log_number, start, end, root_hash, root_key_path, root_cert_path, use_lms=True
+    ca_id, log_number, start, end, root_hash, root_key_path, root_cert_path
 ):
-    """Signs FidoMtcSubtreeCheckpoint with the LMS Intermediate CA (alg=-46) or Enterprise Root CA key."""
+    """Signs FidoMtcSubtreeCheckpoint with the stateless Enterprise Root CA key."""
     checkpoint = encode_mtc_subtree_checkpoint(
         ca_id, log_number, start, end, root_hash
     )
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    lms_int_state = os.path.join(
-        repo_root, "crypto_data_lms", "intermediates", "lms_intermediate_0.state.json"
-    )
-    if use_lms and os.path.exists(lms_int_state):
-        import gen_lms_certs
-
-        lms_ca = gen_lms_certs.StatefulHssLmsCa.load(lms_int_state)
-        q_slot = 4 if ca_id == bytes.fromhex("83993f0101") else 5
-        _, sig = lms_ca.sign_hss(checkpoint, explicit_q=q_slot)
-        return gen_lms_certs.COSE_ALG_HSS_LMS, sig
-
     if not (os.path.exists(root_key_path) and os.path.exists(root_cert_path)):
         return None
     import subprocess
@@ -799,9 +830,9 @@ def main(args):
             fatal(f"--enterprise-index ({ent_index}) must be in [0, {ent_batch_size}).")
         ent_nb = int(ent_cert.not_valid_before_utc.timestamp())
         ent_na = (
-            MTC_NON_EXPIRING_NOT_AFTER
-            if args.enterprise_non_expiring
-            else int(ent_cert.not_valid_after_utc.timestamp())
+            int(ent_cert.not_valid_after_utc.timestamp())
+            if args.mtc_use_cert_expiry
+            else MTC_NON_EXPIRING_NOT_AFTER
         )
         ent_fw_version = args.mtc_fw_version
 
@@ -875,18 +906,25 @@ def main(args):
                 "end": ent_batch_size,
                 "rootHash": b64url_encode(ent_landmark_root),
             }
-            default_ta_path = os.path.join(default_ent_dir, "mtc_trust_anchor.json")
-            if os.path.exists(default_ta_path):
-                with open(default_ta_path, "r", encoding="utf-8") as dtf:
-                    gen_ta = json.load(dtf)
-                gen_subtrees = gen_ta.get("subtrees", [])
-                if (
-                    gen_subtrees
-                    and gen_subtrees[0].get("rootHash") == subtree_entry["rootHash"]
-                    and "signature" in gen_subtrees[0]
-                ):
-                    subtree_entry["alg"] = gen_subtrees[0]["alg"]
-                    subtree_entry["signature"] = gen_subtrees[0]["signature"]
+            root_key_path = os.path.join(default_ent_dir, "enterprise_root_ca.key")
+            root_cert_path = os.path.join(default_ent_dir, "enterprise_root_ca.pem")
+            signed_ent = sign_subtree_checkpoint_with_root_ca(
+                ent_ca_id,
+                args.mtc_log_number,
+                0,
+                ent_batch_size,
+                ent_landmark_root,
+                root_key_path,
+                root_cert_path,
+            )
+            if signed_ent is not None:
+                ent_root_alg, ent_sig_bytes = signed_ent
+                subtree_entry["alg"] = ent_root_alg
+                subtree_entry["signature"] = b64url_encode(ent_sig_bytes)
+                info(
+                    f"Signed Enterprise MTC subtree checkpoint (caId='{b64url_encode(ent_ca_id)}') "
+                    f"with Enterprise Root CA (alg={ent_root_alg}, sig={len(ent_sig_bytes)}B)"
+                )
             ent_trust_anchor = {
                 "caId": b64url_encode(ent_ca_id),
                 "hashAlg": "sha-256",
