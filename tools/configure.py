@@ -485,23 +485,29 @@ def main(args):
                         sib_na,
                         hashlib.sha256(sib_cose_pk).digest(),
                     )
-                    batch_keys_entries.append(
-                        {
-                            "serial": sib_serial,
-                            "alg": sib_alg,
-                            "coseKey": b64url_encode(sib_cose_pk),
-                        }
-                    )
+                    bk_entry = {
+                        "serial": sib_serial,
+                        "alg": sib_alg,
+                        "notBefore": sib_nb,
+                        "notAfter": sib_na,
+                        "coseKey": b64url_encode(sib_cose_pk),
+                    }
+                    if fw_version is not None:
+                        bk_entry["firmwareVersion"] = fw_version
+                    batch_keys_entries.append(bk_entry)
 
         leaf_entries_by_index[our_index] = (not_before, not_after, pub_key_hash)
         if not any(bk["serial"] == our_serial for bk in batch_keys_entries):
-            batch_keys_entries.append(
-                {
-                    "serial": our_serial,
-                    "alg": cose_alg if cose_alg is not None else -7,
-                    "coseKey": b64url_encode(canonical_cose_pk),
-                }
-            )
+            our_bk_entry = {
+                "serial": our_serial,
+                "alg": cose_alg if cose_alg is not None else -7,
+                "notBefore": not_before,
+                "notAfter": not_after,
+                "coseKey": b64url_encode(canonical_cose_pk),
+            }
+            if fw_version is not None:
+                our_bk_entry["firmwareVersion"] = fw_version
+            batch_keys_entries.append(our_bk_entry)
             batch_keys_entries.sort(key=lambda x: x["serial"])
 
         leaf_hashes = []
@@ -1063,9 +1069,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mtc-fw-version",
         type=int,
-        default=None,
+        default=256,
         dest="mtc_fw_version",
-        help="Optional firmware version integer committed in the FidoMtcLogEntry.",
+        help="Optional firmware version integer committed in the FidoMtcLogEntry (default: 256 / 0x0100).",
     )
     parser.add_argument(
         "--mtc-trust-anchor-out",

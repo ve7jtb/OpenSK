@@ -499,6 +499,12 @@ def main():
         help="Number of leaves in the generated Enterprise MTC subtree (default: 8).",
     )
     parser.add_argument(
+        "--fw-version",
+        type=int,
+        default=256,
+        help="Firmware version integer committed in the FidoMtcLogEntry (default: 256 / 0x0100).",
+    )
+    parser.add_argument(
         "--ca-type",
         default="lms",
         choices=["lms", "mldsa"],
@@ -849,7 +855,9 @@ def main():
     )
     cose_alg, canonical_cose_pk = extract_cose_public_key_from_der(cert_der)
     pub_key_hash = hashlib.sha256(canonical_cose_pk).digest()
-    not_before, not_after = parse_cert_timestamps(cert_path)
+    not_before, _cert_not_after = parse_cert_timestamps(cert_path)
+    # RFC 5280 §4.1.2.5 non-expiring GeneralizedTime 99991231235959Z (9999-12-31T23:59:59Z)
+    not_after = 253402300799
 
     # 4. Compute Enterprise MTC serial and Merkle inclusion proof
     ca_id = bytes.fromhex(args.ca_id)
@@ -879,7 +887,7 @@ def main():
                 not_before,
                 not_after,
                 aaguid_bytes,
-                None,
+                args.fw_version,
                 pk_h,
                 extensions=leaf_ext,
             )
@@ -922,6 +930,8 @@ def main():
         "notAfter": not_after,
         "mtcProof": mtc_proof_bytes,
     }
+    if args.fw_version is not None:
+        mtc_cert_map["firmwareVersion"] = args.fw_version
     provisioned_mtc = {
         "fmt": "mtc",
         "x5c": cert_der,
@@ -1034,6 +1044,7 @@ def main():
             "mtcSerialHex": f"0x{mtc_serial:016x}",
             "notBefore": not_before,
             "notAfter": not_after,
+            "firmwareVersion": args.fw_version,
             "cosePublicKeyB64Url": b64url_encode(canonical_cose_pk),
             "pubKeyHashHex": pub_key_hash.hex(),
             "leafHashHex": leaf_hashes[leaf_index].hex(),
@@ -1047,6 +1058,20 @@ def main():
             "provisionedCborLengthBytes": len(provisioned_cbor),
         },
         "mtcTrustAnchor": trust_anchor,
+        "enterpriseInventoryManifest": {
+            "caId": b64url_encode(ca_id),
+            "batchKeys": [
+                {
+                    "serial": mtc_serial,
+                    "alg": cose_alg,
+                    "notBefore": not_before,
+                    "notAfter": not_after,
+                    "firmwareVersion": args.fw_version,
+                    "deviceSerial": args.serial,
+                    "coseKey": b64url_encode(canonical_cose_pk),
+                }
+            ],
+        },
     }
     info_out_path = os.path.join(ent_dir, "mtc_enterprise_info.json")
     with open(info_out_path, "w", encoding="utf-8") as f:

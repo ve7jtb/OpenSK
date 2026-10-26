@@ -961,6 +961,10 @@ def generate_lms_hierarchy_and_batch_certs(
                 with open(ta_path, "r", encoding="utf-8") as f:
                     ta = json.load(f)
                 ca_id_bytes = b64url_decode(ta["caId"])
+                for bk in ta.get("batchKeys", []):
+                    bk.setdefault("notBefore", int(not_before_dt.timestamp()))
+                    bk["notAfter"] = 253402300799
+                    bk["firmwareVersion"] = 256
                 for st in ta.get("subtrees", []):
                     cp_bytes = encode_mtc_subtree_checkpoint(
                         ca_id_bytes,
@@ -990,9 +994,17 @@ def generate_lms_hierarchy_and_batch_certs(
                 continue
             with open(mds_path, "r", encoding="utf-8") as f:
                 mds = json.load(f)
+            mds["authenticatorVersion"] = 256
+            if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
+                mds["authenticatorGetInfo"]["firmwareVersion"] = 256
             mds["attestationRootCertificates"] = mds_root_certs_b64
             for ta in mds.get("mtcTrustAnchors", []):
                 ca_id_str = ta.get("caId", "")
+                for bk in ta.get("batchKeys", []):
+                    bk.setdefault("notBefore", int(not_before_dt.timestamp()))
+                    bk["notAfter"] = 253402300799
+                    bk["firmwareVersion"] = 256
+                    bk["firmwareVersion"] = 256
                 if ca_id_str in loaded_tas:
                     ta["maxBatchWindow"] = loaded_tas[ca_id_str]["maxBatchWindow"]
                     ta["subtrees"] = loaded_tas[ca_id_str]["subtrees"]

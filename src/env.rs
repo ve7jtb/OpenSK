@@ -102,6 +102,10 @@ impl Env for WasefireEnv {
         false
     }
 
+    fn firmware_version(&self) -> Option<u64> {
+        Some(256)
+    }
+
     fn process_vendor_command(
         &mut self,
         bytes: &[u8],
