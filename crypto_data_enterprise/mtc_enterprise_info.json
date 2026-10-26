@@ -24,8 +24,16 @@
     "pemFile": "fidont_cert.pem",
     "privateKeyFile": "fidont.key",
     "signedBy": "../crypto_data_lms/intermediates/lms_intermediate_0.pem",
-    "derLengthBytes": 3069,
+    "derLengthBytes": 3094,
     "fidoAaguidExtensionOid": "1.3.6.1.4.1.45724.1.1.4",
+    "fidoFirmwareVersionExtension": {
+      "oid": "1.3.6.1.4.1.45724.1.1.3",
+      "name": "id-fido-gen-ce-fwversion",
+      "critical": false,
+      "asn1Type": "OCTET STRING",
+      "value": 256,
+      "derHex": "040400000100"
+    },
     "fidoSerialNumberExtension": {
       "oid": "1.3.6.1.4.1.45724.1.1.2",
       "name": "id-fido-gen-ce-sernum",
@@ -56,7 +64,7 @@
     "mtcProofLengthBytes": 121,
     "mtcProofB64Url": "AAYxMjM0NTYAAAAAAAAAAAAAAAgAYMMaxQC4ueCil2dcZhRVOy_pUEDax07F6KwBzvFiuOT3AMQqM_xiGWQawvcYPas4sr6Gr2kgI_3xu8KUwx7Bd4zx2L3PafSf7_iV3lbRIesq9Qy9x-Kk9zYLfv9bXPtezgAAAA",
     "provisionedCborFile": "provisioned_enterprise_attestation.cbor",
-    "provisionedCborLengthBytes": 3305
+    "provisionedCborLengthBytes": 3330
   },
   "mtcTrustAnchor": {
     "caId": "g5k_AQI",

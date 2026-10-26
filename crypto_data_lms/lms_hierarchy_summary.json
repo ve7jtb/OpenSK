@@ -67,7 +67,9 @@
       "signedByIntermediateIndex": 0,
       "intermediateLeafQ": 0,
       "certSerialHex": "0x0300",
-      "derLengthBytes": 3033,
+      "firmwareVersion": 256,
+      "fidoFirmwareVersionHex": "00000100",
+      "derLengthBytes": 3056,
       "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa44/fidont_cert.pem"
     },
     "crypto_data_mldsa65": {
@@ -78,7 +80,9 @@
       "signedByIntermediateIndex": 0,
       "intermediateLeafQ": 1,
       "certSerialHex": "0x0301",
-      "derLengthBytes": 3673,
+      "firmwareVersion": 256,
+      "fidoFirmwareVersionHex": "00000100",
+      "derLengthBytes": 3696,
       "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa65/fidont_cert.pem"
     },
     "crypto_data_mldsa87": {
@@ -89,7 +93,9 @@
       "signedByIntermediateIndex": 0,
       "intermediateLeafQ": 2,
       "certSerialHex": "0x0302",
-      "derLengthBytes": 4313,
+      "firmwareVersion": 256,
+      "fidoFirmwareVersionHex": "00000100",
+      "derLengthBytes": 4336,
       "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_mldsa87/fidont_cert.pem"
     },
     "crypto_data_enterprise": {
@@ -100,8 +106,11 @@
       "signedByIntermediateIndex": 0,
       "intermediateLeafQ": 3,
       "certSerialHex": "0x0303",
-      "derLengthBytes": 3069,
-      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_enterprise/fidont_cert.pem"
+      "firmwareVersion": 256,
+      "fidoFirmwareVersionHex": "00000100",
+      "derLengthBytes": 3094,
+      "pemFile": "/Users/jbradley/.gemini/antigravity/scratch/OpenSK/crypto_data_enterprise/fidont_cert.pem",
+      "enterpriseSerial": "123456"
     }
   }
 }

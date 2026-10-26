@@ -21,6 +21,10 @@ keyUsage         = critical, digitalSignature
 # OID: 1.3.6.1.4.1.45724.1.1.4 (id-fido-gen-ce-aaguid)
 1.3.6.1.4.1.45724.1.1.4 = ASN1:FORMAT:HEX,OCT:DEADBEEF000000000000DEADBEEF0000
 
+# FIDO Authenticator Firmware Version Extension (non-critical OCTET STRING)
+# OID: 1.3.6.1.4.1.45724.1.1.3 (id-fido-gen-ce-fwversion)
+1.3.6.1.4.1.45724.1.1.3 = ASN1:FORMAT:HEX,OCT:00000100
+
 # FIDO Enterprise Attestation Serial Number Extension (non-critical OCTET STRING)
 # OID: 1.3.6.1.4.1.45724.1.1.2 (id-fido-gen-ce-sernum)
 1.3.6.1.4.1.45724.1.1.2 = ASN1:OCTETSTRING:${FIDO_SERIAL_NUMBER}
