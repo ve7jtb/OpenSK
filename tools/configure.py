@@ -179,6 +179,63 @@ def extract_cose_public_key_from_cert(cert, cert_der, cose_alg):
     fatal("Unable to construct COSE_Key from certificate public key.")
 
 
+def read_opensk_firmware_version(repo_root: str) -> int:
+    """Reads OPENSK_FIRMWARE_VERSION (or firmware_version() -> Some(N)) from src/env.rs."""
+    import re
+
+    env_rs_path = os.path.join(repo_root, "src", "env.rs")
+    if os.path.exists(env_rs_path):
+        with open(env_rs_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r"OPENSK_FIRMWARE_VERSION\s*:\s*u64\s*=\s*(0x[0-9a-fA-F_]+|\d+)", text)
+        if m:
+            return int(m.group(1).replace("_", ""), 0)
+        m2 = re.search(r"fn\s+firmware_version\s*\([^)]*\)\s*->\s*Option<u64>\s*\{\s*Some\((0x[0-9a-fA-F_]+|\d+)\)", text)
+        if m2:
+            return int(m2.group(1).replace("_", ""), 0)
+    return 256
+
+
+def sync_mds_metadata_files(
+    repo_root: str,
+    fw_version: int | None,
+    batch_trust_anchor: dict | None = None,
+    ent_trust_anchor: dict | None = None,
+) -> None:
+    """Propagates firmwareVersion, batch trust anchor, and enterprise trust anchor into metadata/*.json."""
+    mds_files = [
+        "metadata_mldsa44_mtc.json",
+        "metadata_mldsa65_mtc.json",
+        "metadata_mldsa87_mtc.json",
+        "metadata_mldsa_all_mtc.json",
+    ]
+    for mds_name in mds_files:
+        mds_path = os.path.join(repo_root, "metadata", mds_name)
+        if not os.path.exists(mds_path):
+            continue
+        with open(mds_path, "r", encoding="utf-8") as f:
+            mds = json.load(f)
+        if fw_version is not None:
+            mds["authenticatorVersion"] = fw_version
+            if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
+                mds["authenticatorGetInfo"]["firmwareVersion"] = fw_version
+        for ta in mds.get("mtcTrustAnchors", []):
+            ca_id_str = ta.get("caId")
+            if fw_version is not None:
+                for bk in ta.get("batchKeys", []):
+                    bk["firmwareVersion"] = fw_version
+            if batch_trust_anchor is not None and ca_id_str == batch_trust_anchor.get("caId"):
+                ta["maxBatchWindow"] = batch_trust_anchor["maxBatchWindow"]
+                ta["subtrees"] = batch_trust_anchor["subtrees"]
+            elif ent_trust_anchor is not None and ca_id_str == ent_trust_anchor.get("caId"):
+                ta["maxBatchWindow"] = ent_trust_anchor["maxBatchWindow"]
+                ta["subtrees"] = ent_trust_anchor["subtrees"]
+        with open(mds_path, "w", encoding="utf-8") as f:
+            json.dump(mds, f, indent=2)
+            f.write("\n")
+    info("Synchronized metadata/metadata_mldsa*.json with updated firmwareVersion and MTC trust anchors.")
+
+
 def fido_mtc_leaf_hash(
     ca_id, serial, not_before, not_after, aaguid_bytes, fw_version, pub_key_hash, extensions=b""
 ):
@@ -395,11 +452,48 @@ def extract_key_material(raw_key_data):
 
 def main(args):
     colorama.init()
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if args.mtc_fw_version is None:
+        args.mtc_fw_version = read_opensk_firmware_version(repo_root)
+
+    # Ensure X.509 certificates (batch & enterprise) have matching firmwareVersion (1.3.6.1.4.1.45724.1.1.3)
+    # and enterprise serial (1.3.6.1.4.1.45724.1.1.2) before reading args.certificate:
+    if args.enterprise or args.mtc:
+        default_ent_dir = os.path.join(repo_root, "crypto_data_enterprise")
+        gen_ent_script = os.path.join(default_ent_dir, "gen_enterprise_key.py")
+        if (
+            args.enterprise_certificate is None
+            and args.enterprise_priv_key is None
+            and os.path.exists(gen_ent_script)
+        ):
+            import subprocess
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    gen_ent_script,
+                    "--serial",
+                    args.enterprise_serial,
+                    "--fw-version",
+                    str(args.mtc_fw_version),
+                    "--batch-size",
+                    str(args.mtc_batch_size),
+                    "--log-number",
+                    str(args.mtc_log_number),
+                    "--reuse-key",
+                ],
+                check=True,
+            )
 
     cose_alg, key_bytes, priv_key = extract_key_material(args.priv_key.read())
     info("Private key is valid.")
 
-    cert_pem = args.certificate.read()
+    cert_path_name = getattr(args.certificate, "name", None)
+    if cert_path_name and os.path.exists(cert_path_name):
+        with open(cert_path_name, "rb") as cf:
+            cert_pem = cf.read()
+    else:
+        cert_pem = args.certificate.read()
     cert = x509.load_pem_x509_certificate(cert_pem)
     # Some sanity/validity checks
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -657,31 +751,11 @@ def main(args):
 
     ent_cbor_data = None
     ent_extra_cert_chunk = b""
+    batch_trust_anchor_obj = trust_anchor if (mtc_format is not None and args.mtc_trust_anchor_out) else None
+    ent_trust_anchor_obj = None
     if args.enterprise:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         default_ent_dir = os.path.join(repo_root, "crypto_data_enterprise")
-        gen_ent_script = os.path.join(default_ent_dir, "gen_enterprise_key.py")
-        if (
-            args.enterprise_certificate is None
-            and args.enterprise_priv_key is None
-            and os.path.exists(gen_ent_script)
-        ):
-            import subprocess
-
-            subprocess.run(
-                [
-                    sys.executable,
-                    gen_ent_script,
-                    "--serial",
-                    args.enterprise_serial,
-                    "--batch-size",
-                    str(args.mtc_batch_size),
-                    "--log-number",
-                    str(args.mtc_log_number),
-                    "--reuse-key",
-                ],
-                check=True,
-            )
 
         if args.enterprise_priv_key is not None:
             ent_cose_alg, ent_key_bytes, ent_priv_key = extract_key_material(
@@ -823,6 +897,7 @@ def main(args):
             }
             with open(args.enterprise_trust_anchor_out, "w", encoding="utf-8") as f:
                 json.dump(ent_trust_anchor, f, indent=2)
+            ent_trust_anchor_obj = ent_trust_anchor
             info(
                 f"Wrote Enterprise FIDO MDS MtcTrustAnchor JSON to {args.enterprise_trust_anchor_out}"
             )
@@ -838,6 +913,14 @@ def main(args):
         }
         if ent_cose_alg is not None:
             ent_cbor_data[2][3] = ent_cose_alg
+
+    if mtc_format is not None or args.enterprise:
+        sync_mds_metadata_files(
+            repo_root,
+            args.mtc_fw_version,
+            batch_trust_anchor=batch_trust_anchor_obj,
+            ent_trust_anchor=ent_trust_anchor_obj,
+        )
 
     patcher = None
     if args.use_vendor_hid:
@@ -1069,9 +1152,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mtc-fw-version",
         type=int,
-        default=256,
+        default=None,
         dest="mtc_fw_version",
-        help="Optional firmware version integer committed in the FidoMtcLogEntry (default: 256 / 0x0100).",
+        help="Optional firmware version integer committed in FidoMtcLogEntry, X.509, and MDS (default: read from src/env.rs).",
     )
     parser.add_argument(
         "--mtc-trust-anchor-out",
