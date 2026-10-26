@@ -34,7 +34,25 @@ MLDSA_SPECS = {
 }
 
 FIDO_AAGUID_OID = "1.3.6.1.4.1.45724.1.1.4"
+FIDO_FWVERSION_OID = "1.3.6.1.4.1.45724.1.1.3"
 FIDO_SERIAL_OID = "1.3.6.1.4.1.45724.1.1.2"
+
+
+def read_opensk_firmware_version(repo_root: str) -> int:
+    """Reads OPENSK_FIRMWARE_VERSION (or firmware_version() -> Some(N)) from src/env.rs."""
+    import re
+
+    env_rs_path = os.path.join(repo_root, "src", "env.rs")
+    if os.path.exists(env_rs_path):
+        with open(env_rs_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r"OPENSK_FIRMWARE_VERSION\s*:\s*u64\s*=\s*(0x[0-9a-fA-F_]+|\d+)", text)
+        if m:
+            return int(m.group(1).replace("_", ""), 0)
+        m2 = re.search(r"fn\s+firmware_version\s*\([^)]*\)\s*->\s*Option<u64>\s*\{\s*Some\((0x[0-9a-fA-F_]+|\d+)\)", text)
+        if m2:
+            return int(m2.group(1).replace("_", ""), 0)
+    return 256
 
 
 def b64url_encode(data: bytes) -> str:
@@ -402,7 +420,7 @@ def encode_mtc_proof_tls(
     return bytes(out)
 
 
-def write_fidont_ext_cnf(cnf_path: str, aaguid_hex: str, serial_str: str) -> None:
+def write_fidont_ext_cnf(cnf_path: str, aaguid_hex: str, serial_str: str, fw_version: int = 256) -> None:
     content = f"""# Default FIDO Enterprise Serial Number (settable via gen_enterprise_key.py --serial)
 FIDO_SERIAL_NUMBER = {serial_str}
 
@@ -426,6 +444,10 @@ keyUsage         = critical, digitalSignature
 # OID: {FIDO_AAGUID_OID} (id-fido-gen-ce-aaguid)
 {FIDO_AAGUID_OID} = ASN1:FORMAT:HEX,OCT:{aaguid_hex.upper()}
 
+# FIDO Authenticator Firmware Version Extension (non-critical OCTET STRING)
+# OID: {FIDO_FWVERSION_OID} (id-fido-gen-ce-fwversion)
+{FIDO_FWVERSION_OID} = ASN1:FORMAT:HEX,OCT:{fw_version:08X}
+
 # FIDO Enterprise Attestation Serial Number Extension (non-critical OCTET STRING)
 # OID: {FIDO_SERIAL_OID} (id-fido-gen-ce-sernum)
 {FIDO_SERIAL_OID} = ASN1:OCTETSTRING:${{FIDO_SERIAL_NUMBER}}
@@ -445,6 +467,35 @@ C  = CA
 basicConstraints     = critical, CA:TRUE, pathlen:0
 keyUsage             = critical, keyCertSign, cRLSign
 subjectKeyIdentifier = hash
+"""
+    with open(cnf_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def write_batch_ext_cnf(cnf_path: str, aaguid_hex: str, fw_version: int = 256) -> None:
+    content = f"""[ req ]
+distinguished_name = req_distinguished_name
+x509_extensions     = fido_extensions
+prompt              = no
+
+[ req_distinguished_name ]
+CN = Fidont Attestation
+O  = John Bradley
+OU = Authenticator Attestation
+C  = CA
+
+[ fido_extensions ]
+# Standard required extensions for a FIDO batch certificate
+basicConstraints = critical, CA:FALSE
+keyUsage         = critical, digitalSignature
+
+# FIDO2 AAGUID Custom Extension
+# OID: {FIDO_AAGUID_OID} (id-fido-gen-ce-aaguid)
+{FIDO_AAGUID_OID} = ASN1:FORMAT:HEX,OCT:{aaguid_hex.upper()}
+
+# FIDO Authenticator Firmware Version Extension (non-critical OCTET STRING)
+# OID: {FIDO_FWVERSION_OID} (id-fido-gen-ce-fwversion)
+{FIDO_FWVERSION_OID} = ASN1:FORMAT:HEX,OCT:{fw_version:08X}
 """
     with open(cnf_path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -501,8 +552,8 @@ def main():
     parser.add_argument(
         "--fw-version",
         type=int,
-        default=256,
-        help="Firmware version integer committed in the FidoMtcLogEntry (default: 256 / 0x0100).",
+        default=None,
+        help="Firmware version integer committed in the FidoMtcLogEntry and X.509 cert (default: read from src/env.rs).",
     )
     parser.add_argument(
         "--ca-type",
@@ -530,6 +581,8 @@ def main():
 
     ent_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(ent_dir)
+    if args.fw_version is None:
+        args.fw_version = read_opensk_firmware_version(repo_root)
     aaguid_path = os.path.join(ent_dir, "aaguid.txt")
     cnf_path = os.path.join(ent_dir, "fidont_ext.cnf")
     root_key_path = os.path.join(ent_dir, "enterprise_root_ca.key")
@@ -544,11 +597,18 @@ def main():
     aaguid_bytes = aaguid_obj.bytes
     aaguid_hex = aaguid_bytes.hex().upper()
 
-    # 1. Write fidont_ext.cnf with the requested serial number (default "123456")
-    write_fidont_ext_cnf(cnf_path, aaguid_hex, args.serial)
+    # 1. Write fidont_ext.cnf with the requested serial number and firmware version
+    write_fidont_ext_cnf(cnf_path, aaguid_hex, args.serial, args.fw_version)
+    for b_dir_name in ["crypto_data", "crypto_data_mldsa44", "crypto_data_mldsa65", "crypto_data_mldsa87"]:
+        b_dir = os.path.join(repo_root, b_dir_name)
+        if os.path.isdir(b_dir):
+            write_batch_ext_cnf(os.path.join(b_dir, "fidont_ext.cnf"), aaguid_hex, args.fw_version)
 
     serial_bytes = args.serial.encode("utf-8")
     fido_serial_ext_der = bytes([0x04, len(serial_bytes)]) + serial_bytes
+    fw_version_bytes = struct.pack(">I", args.fw_version)
+    fido_fwversion_ext_der = b"\x04\x04" + fw_version_bytes
+    fido_fwversion_oid_der = bytes.fromhex("060b2b0601040182e51c010103")
 
     if args.ca_type == "lms":
         tools_dir = os.path.join(repo_root, "tools")
@@ -571,7 +631,7 @@ def main():
 
         if not (os.path.exists(lms_int_pem) and os.path.exists(lms_int_state)):
             lms_mod.generate_lms_hierarchy_and_batch_certs(
-                repo_root, enterprise_serial=args.serial
+                repo_root, enterprise_serial=args.serial, fw_version=args.fw_version
             )
 
         root_cert_path = lms_int_pem
@@ -584,12 +644,17 @@ def main():
             existing_der = subprocess.check_output(
                 ["openssl", "x509", "-in", cert_path, "-outform", "DER"]
             )
-            if fido_serial_ext_der in existing_der and lms_mod.verify_lms_x509_cert_der(existing_der, int_hss_pub):
+            if (
+                fido_serial_ext_der in existing_der
+                and fido_fwversion_oid_der in existing_der
+                and fido_fwversion_ext_der in existing_der
+                and lms_mod.verify_lms_x509_cert_der(existing_der, int_hss_pub)
+            ):
                 reuse_existing_leaf_cert = True
 
         if not reuse_existing_leaf_cert:
             lms_mod.generate_lms_hierarchy_and_batch_certs(
-                repo_root, enterprise_serial=args.serial
+                repo_root, enterprise_serial=args.serial, fw_version=args.fw_version
             )
             int_ca = lms_mod.StatefulHssLmsCa.load(lms_int_state)
             int_hss_pub = int_ca.hss_public_key_bytes()
@@ -787,6 +852,9 @@ def main():
     if os.path.exists(es256_key) and os.path.exists(es256_cnf):
         es256_needs_signing = True
         if args.reuse_key and os.path.exists(es256_cert):
+            es256_der = subprocess.check_output(
+                ["openssl", "x509", "-in", es256_cert, "-outform", "DER"]
+            )
             iss_sub = subprocess.check_output(
                 ["openssl", "x509", "-in", es256_cert, "-noout", "-issuer", "-subject"],
                 text=True,
@@ -799,6 +867,8 @@ def main():
                 v_res.returncode == 0
                 and len(iss_sub) == 2
                 and iss_sub[0].split("=", 1)[1] != iss_sub[1].split("=", 1)[1]
+                and fido_fwversion_oid_der in es256_der
+                and fido_fwversion_ext_der in es256_der
             ):
                 es256_needs_signing = False
         if es256_needs_signing:
@@ -1025,6 +1095,14 @@ def main():
             "signedBy": os.path.relpath(root_cert_path, ent_dir),
             "derLengthBytes": len(cert_der),
             "fidoAaguidExtensionOid": FIDO_AAGUID_OID,
+            "fidoFirmwareVersionExtension": {
+                "oid": FIDO_FWVERSION_OID,
+                "name": "id-fido-gen-ce-fwversion",
+                "critical": False,
+                "asn1Type": "OCTET STRING",
+                "value": args.fw_version,
+                "derHex": fido_fwversion_ext_der.hex(),
+            },
             "fidoSerialNumberExtension": {
                 "oid": FIDO_SERIAL_OID,
                 "name": "id-fido-gen-ce-sernum",
