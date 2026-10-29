@@ -94,7 +94,7 @@ RUNNER_LOG_FLAGS=(--single-sided)
 if [[ ",$FEATURES," == *",debug,"* ]]; then
   export WASEFIRE_DEBUG=1
   XTASK_FLAGS=(--native)
-  RUNNER_LOG_FLAGS+=(--log=trace)
+  RUNNER_LOG_FLAGS+=(--log=info)
 fi
 
 if [[ "$TARGET" != "host" ]]; then

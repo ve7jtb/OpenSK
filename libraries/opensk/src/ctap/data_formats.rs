@@ -40,19 +40,19 @@ pub struct TruncatedBytes<'a>(pub &'a [u8]);
 impl core::fmt::Debug for TruncatedBytes<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         #[cfg(feature = "suppress_crypto_bytes")]
-        {
-            const LIMIT: usize = 16;
-            const PREVIEW: usize = 8;
-            if self.0.len() > LIMIT {
-                write!(f, "[")?;
-                for (i, b) in self.0[..PREVIEW].iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{b:02x}")?;
+        const LIMIT: usize = 16;
+        #[cfg(not(feature = "suppress_crypto_bytes"))]
+        const LIMIT: usize = 256;
+        const PREVIEW: usize = 8;
+        if self.0.len() > LIMIT {
+            write!(f, "[")?;
+            for (i, b) in self.0[..PREVIEW].iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
                 }
-                return write!(f, ", .. ({} bytes)]", self.0.len());
+                write!(f, "{b:02x}")?;
             }
+            return write!(f, ", .. ({} bytes)]", self.0.len());
         }
         write!(f, "{:02x?}", self.0)
     }

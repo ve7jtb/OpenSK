@@ -284,6 +284,8 @@ def sync_mds_metadata_files(
             elif ent_trust_anchor is not None and ca_id_str == ent_trust_anchor.get("caId"):
                 ta["maxBatchWindow"] = ent_trust_anchor["maxBatchWindow"]
                 ta["subtrees"] = ent_trust_anchor["subtrees"]
+            for bk in ta.get("batchKeys", []):
+                bk.pop("alg", None)
             if fw_version is not None:
                 for bk in ta.get("batchKeys", []):
                     bk["firmwareVersion"] = fw_version
@@ -626,7 +628,6 @@ def main(args):
                     )
                     bk_entry = {
                         "serial": sib_serial,
-                        "alg": sib_alg,
                         "notBefore": sib_nb,
                         "notAfter": sib_na,
                         "coseKey": b64url_encode(sib_cose_pk),
@@ -639,7 +640,6 @@ def main(args):
         if not any(bk["serial"] == our_serial for bk in batch_keys_entries):
             our_bk_entry = {
                 "serial": our_serial,
-                "alg": cose_alg if cose_alg is not None else -7,
                 "notBefore": not_before,
                 "notAfter": not_after,
                 "coseKey": b64url_encode(canonical_cose_pk),

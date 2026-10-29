@@ -46,11 +46,11 @@ impl<E: Env> U2fUserPresenceState<E> {
 
     /// Returns whether user presence was granted within the timeout and not yet consumed.
     #[cfg_attr(
-        feature = "up_always_true",
+        all(feature = "up_always_true", not(test)),
         allow(unreachable_code, unused_variables)
     )]
     pub fn consume_up(&mut self, env: &mut E) -> bool {
-        #[cfg(feature = "up_always_true")]
+        #[cfg(all(feature = "up_always_true", not(test)))]
         return true;
 
         if !env.clock().is_elapsed(&self.has_up) {

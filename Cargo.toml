@@ -44,7 +44,7 @@ path = "libraries/cbor"
 [features]
 config-command = ["opensk/config_command"]
 ctap1 = ["opensk/ctap1"]
-debug = ["opensk/debug_ctap"]
+debug = ["opensk/debug_ctap", "opensk/suppress_crypto_bytes"]
 ed25519 = ["opensk/ed25519", "wasefire/api-crypto-ed25519"]
 ed448 = ["opensk/ed448"]
 es384 = ["opensk/es384"]

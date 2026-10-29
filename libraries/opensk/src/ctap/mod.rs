@@ -482,11 +482,11 @@ fn wait_and_respond_busy<E: Env>(env: &mut E, channel: Channel) -> CtapResult<()
 ///
 /// Returns an error in case of timeout, user declining presence request, or keepalive error.
 #[cfg_attr(
-    feature = "up_always_true",
+    all(feature = "up_always_true", not(test)),
     allow(unreachable_code, unused_variables)
 )]
 pub fn check_user_presence<E: Env>(env: &mut E, channel: Channel) -> CtapResult<()> {
-    #[cfg(feature = "up_always_true")]
+    #[cfg(all(feature = "up_always_true", not(test)))]
     {
         let (cid, transport) = match channel {
             Channel::MainHid(cid) => (cid, Transport::MainHid),
@@ -1165,14 +1165,6 @@ impl<E: Env> CtapState<E> {
         } else {
             None
         };
-        let has_extension_output = extensions.hmac_secret
-            || extensions.cred_protect.is_some()
-            || min_pin_length
-            || has_cred_blob_output
-            || extensions.mtc_debug;
-        if has_extension_output {
-            flags |= ED_FLAG
-        };
         let large_blob_key = match (options.rk, extensions.large_blob_key) {
             (true, Some(true)) => Some(env.rng().gen_uniform_u8x32().to_vec()),
             (false, Some(true)) | (_, Some(false)) => {
@@ -1247,6 +1239,14 @@ impl<E: Env> CtapState<E> {
         auth_data.extend(&credential_id);
         let public_cose_key = private_key.get_pub_key()?;
         cbor_write(cbor::Value::from(public_cose_key), &mut auth_data)?;
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum SelectedAttestationFormat {
+            Mtc,
+            Packed,
+            NoneFormat,
+        }
+
         let explicit_mtc_pref = attestation_formats_preference.as_deref().is_some_and(|prefs| {
             prefs.iter().any(|pref| {
                 mtc_att.is_some()
@@ -1258,8 +1258,74 @@ impl<E: Env> CtapState<E> {
                     )
             })
         });
+        let default_format = match &mtc_att {
+            Some(_) => SelectedAttestationFormat::Mtc,
+            None => SelectedAttestationFormat::Packed,
+        };
+        let mut selected_format = match attestation_formats_preference.as_deref() {
+            Some(prefs) => prefs
+                .iter()
+                .find_map(|pref| match pref.as_str() {
+                    mtc::MTC_FORMAT_STR
+                    | mtc::MTC_KEYREF_FORMAT_STR
+                    | mtc::MTC_MDS_FORMAT_STR
+                        if mtc_att.is_some() =>
+                    {
+                        Some(SelectedAttestationFormat::Mtc)
+                    }
+                    "packed" => Some(SelectedAttestationFormat::Packed),
+                    "none" if !ep_att => Some(SelectedAttestationFormat::NoneFormat),
+                    _ => None,
+                })
+                .unwrap_or(default_format),
+            None => default_format,
+        };
 
+        let primary_att_key = attestation
+            .as_ref()
+            .and_then(|att| PrivateKey::<E>::from_attestation_bytes(&att.wrapped_private_key));
+
+        // Resolve any automatic cascade from Mtc -> Packed before building extensions so that
+        // `mtc-debug` is strictly gated on the final attestation statement format being `"mtc"`.
+        if selected_format == SelectedAttestationFormat::Mtc
+            && let Some(ref active_mtc) = mtc_att
+        {
+            let use_classical_packed = !ep_att
+                && !algorithm.is_mldsa()
+                && !explicit_mtc_pref
+                && active_mtc.classical_key.is_some()
+                && active_mtc.classical_x5c.is_some();
+            let est_sig_len = match primary_att_key.as_ref().map(|k| k.signature_algorithm()) {
+                #[cfg(feature = "mldsa")]
+                Some(SignatureAlgorithm::MlDsa44) => 2420,
+                #[cfg(feature = "mldsa")]
+                Some(SignatureAlgorithm::MlDsa65) => 3309,
+                #[cfg(feature = "mldsa")]
+                Some(SignatureAlgorithm::MlDsa87) => 4627,
+                _ => 72,
+            };
+            let use_tier1_packed = !explicit_mtc_pref
+                && active_mtc
+                    .x5c
+                    .as_ref()
+                    .is_some_and(|x5c_der| auth_data.len() + est_sig_len + x5c_der.len() + 60 <= 7550);
+            if use_classical_packed || use_tier1_packed {
+                selected_format = SelectedAttestationFormat::Packed;
+            }
+        }
+
+        // WebAuthn Level 4 §10.2.1 Attestation Format Gate:
+        // `mtc-debug` is ONLY allowed when the attestation statement format is `"mtc"`,
+        // and is explicitly disallowed when `fmt` is `"none"` or any format other than `"mtc"`.
+        let include_mtc_debug =
+            extensions.mtc_debug && selected_format == SelectedAttestationFormat::Mtc;
+        let has_extension_output = extensions.hmac_secret
+            || extensions.cred_protect.is_some()
+            || min_pin_length
+            || has_cred_blob_output
+            || include_mtc_debug;
         if has_extension_output {
+            auth_data[32] |= ED_FLAG;
             let hmac_secret_output = if extensions.hmac_secret {
                 Some(true)
             } else {
@@ -1271,22 +1337,8 @@ impl<E: Env> CtapState<E> {
                 None
             };
             let cred_protect_output = extensions.cred_protect.and(cred_protect_policy);
-            let mtc_debug_output = if extensions.mtc_debug {
-                let primary_att_key = attestation
-                    .as_ref()
-                    .and_then(|att| PrivateKey::<E>::from_attestation_bytes(&att.wrapped_private_key));
-                let debug_att_key = if !ep_att
-                    && !algorithm.is_mldsa()
-                    && !explicit_mtc_pref
-                    && let Some(c_key) = mtc_att.as_ref().and_then(|m| m.classical_key.as_ref())
-                {
-                    PrivateKey::<E>::from_attestation_bytes(c_key)
-                } else {
-                    attestation
-                        .as_ref()
-                        .and_then(|att| PrivateKey::<E>::from_attestation_bytes(&att.wrapped_private_key))
-                };
-                let cose_pk = match debug_att_key.as_ref() {
+            let mtc_debug_output = if include_mtc_debug {
+                let cose_pk = match primary_att_key.as_ref() {
                     Some(att_k) => att_k.get_pub_key()?,
                     None => private_key.get_pub_key()?,
                 };
@@ -1313,17 +1365,10 @@ impl<E: Env> CtapState<E> {
 
                 let (not_before_opt, not_after_opt, fw_version_opt, mtc_proof_opt, root_hash_opt) =
                     if let Some(active_mtc) = mtc_att.as_ref() {
-                        let mtc_pk_bytes = if let Some(ref prim_k) = primary_att_key {
-                            let mut buf = Vec::new();
-                            cbor_write(cbor::Value::from(prim_k.get_pub_key()?), &mut buf)?;
-                            buf
-                        } else {
-                            pk_bytes.clone()
-                        };
                         let aaguid = env.persist().aaguid()?;
                         let root_hash = mtc::compute_mtc_root_hash::<Sha<E>>(
                             &active_mtc.cert,
-                            &mtc_pk_bytes,
+                            &pk_bytes,
                             &aaguid,
                         )
                         .map(|rh| rh.to_vec());
@@ -1381,36 +1426,6 @@ impl<E: Env> CtapState<E> {
         let mut signature_data = auth_data.clone();
         signature_data.extend(client_data_hash);
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum SelectedAttestationFormat {
-            Mtc,
-            Packed,
-            NoneFormat,
-        }
-
-        let default_format = match &mtc_att {
-            Some(_) => SelectedAttestationFormat::Mtc,
-            None => SelectedAttestationFormat::Packed,
-        };
-        let selected_format = match attestation_formats_preference.as_deref() {
-            Some(prefs) => prefs
-                .iter()
-                .find_map(|pref| match pref.as_str() {
-                    mtc::MTC_FORMAT_STR
-                    | mtc::MTC_KEYREF_FORMAT_STR
-                    | mtc::MTC_MDS_FORMAT_STR
-                        if mtc_att.is_some() =>
-                    {
-                        Some(SelectedAttestationFormat::Mtc)
-                    }
-                    "packed" => Some(SelectedAttestationFormat::Packed),
-                    "none" if !ep_att => Some(SelectedAttestationFormat::NoneFormat),
-                    _ => None,
-                })
-                .unwrap_or(default_format),
-            None => default_format,
-        };
-
         let (fmt, alg, signature, x5c, pub_key, mtc_cert) = match selected_format {
             SelectedAttestationFormat::NoneFormat => (
                 String::from("none"),
@@ -1426,75 +1441,22 @@ impl<E: Env> CtapState<E> {
                     ..
                 } = attestation.ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
                 let mtc_att = mtc_att.ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-
-                // Second Non-Enterprise Batch X.509 Certificate (`cKey` + `cX5c`):
-                // For non-Enterprise MakeCredential requests where the credential algorithm is
-                // non-ML-DSA (e.g., ES256, ES384, ES512, Ed25519, Ed448, RS256) and the client did
-                // not explicitly request "mtc" via 0x0B, use the provisioned classical
-                // batch key and X.509 certificate when present.
-                if !ep_att
-                    && !algorithm.is_mldsa()
-                    && !explicit_mtc_pref
-                    && let (Some(c_key), Some(c_x5c)) =
-                        (mtc_att.classical_key.as_ref(), mtc_att.classical_x5c.as_ref())
-                {
-                    let classical_att_key = PrivateKey::<E>::from_attestation_bytes(c_key)
+                let attestation_key =
+                    PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
                         .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                    let c_alg = classical_att_key.signature_algorithm() as i64;
-                    let c_sig = classical_att_key.sign_and_encode(&signature_data)?;
-                    (
-                        String::from("packed"),
-                        c_alg,
-                        c_sig,
-                        Some(vec![c_x5c.clone()]),
-                        None,
-                        None,
-                    )
-                } else {
-                    let attestation_key =
-                        PrivateKey::<E>::from_attestation_bytes(&wrapped_private_key)
-                            .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                    let alg = attestation_key.signature_algorithm() as i64;
-                    let sig = attestation_key.sign_and_encode(&signature_data)?;
-
-                    // Tier 1 (Both Non-Enterprise and Enterprise): If no explicit MTC format was
-                    // requested via 0x0B (e.g., 0x0B is omitted or empty) and an X.509 certificate
-                    // (`x5c`) was provisioned alongside `mtcCert`, provide standard `"packed"`
-                    // attestation with `x5c` whenever the total response fits in 7,609 B!
-                    // If `x5c` is too large for the 7,609 B budget, cascade to Tier 2 (`"mtc"`).
-                    if !explicit_mtc_pref
-                        && let Some(x5c_der) = mtc_att.x5c.as_ref()
-                        && auth_data.len() + sig.len() + x5c_der.len() + 60 <= 7550
-                    {
-                        (
-                            String::from("packed"),
-                            alg,
-                            sig,
-                            Some(vec![x5c_der.clone()]),
-                            None,
-                            None,
-                        )
-                    } else {
-                        let explicit_keyref_pref = attestation_formats_preference
-                            .as_ref()
-                            .is_some_and(|prefs| {
-                                prefs.iter().any(|p| p == mtc::MTC_KEYREF_FORMAT_STR)
-                            });
-                        let wire_mtc_cert = if mtc_att.key_ref || explicit_keyref_pref {
-                            mtc_att.cert.to_key_ref()
-                        } else {
-                            mtc_att.cert
-                        };
-                        (
-                            String::from(mtc::MTC_FORMAT_STR),
-                            alg,
-                            sig,
-                            None,
-                            None,
-                            Some(wire_mtc_cert),
-                        )
-                    }
-                }
+                let alg = attestation_key.signature_algorithm() as i64;
+                let sig = attestation_key.sign_and_encode(&signature_data)?;
+                // WebAuthn Level 4 §8.10: `attStmt.mtcCert` on the wire is always the
+                // ultra-compact 2-field `mtcKeyRef` (`{ caId, serial }`).
+                let wire_mtc_cert = mtc_att.cert.to_key_ref();
+                (
+                    String::from(mtc::MTC_FORMAT_STR),
+                    alg,
+                    sig,
+                    None,
+                    None,
+                    Some(wire_mtc_cert),
+                )
             }
             SelectedAttestationFormat::Packed => match (attestation, mtc_att) {
                 (
@@ -1937,18 +1899,23 @@ impl<E: Env> CtapState<E> {
         if env.customization().allows_pin_protocol_v1() {
             pin_protocols.push(PinUvAuthProtocol::V1 as u64);
         }
-        let attestation_formats = if env.customization().use_batch_attestation() {
-            match env
-                .persist()
+        let supports_mtc = if env.customization().use_batch_attestation() {
+            env.persist()
                 .get_attestation(AttestationId::Batch)?
                 .and_then(|att| mtc::ProvisionedMtcAttestation::from_bytes(&att.certificate))
-            {
-                Some(_) => vec![
-                    String::from(mtc::MTC_FORMAT_STR),
-                    String::from("packed"),
-                ],
-                None => vec![String::from("packed")],
-            }
+                .is_some()
+        } else {
+            false
+        } || env
+            .persist()
+            .get_attestation(AttestationId::Enterprise)?
+            .and_then(|att| mtc::ProvisionedMtcAttestation::from_bytes(&att.certificate))
+            .is_some();
+        let attestation_formats = if supports_mtc {
+            vec![
+                String::from(mtc::MTC_FORMAT_STR),
+                String::from("packed"),
+            ]
         } else {
             vec![String::from("packed")]
         };
@@ -1969,19 +1936,23 @@ impl<E: Env> CtapState<E> {
             &enc_state_plain,
         ));
 
+        let mut extensions = vec![
+            String::from("hmac-secret"),
+            String::from("hmac-secret-mc"),
+            String::from("credProtect"),
+            String::from("minPinLength"),
+            String::from("credBlob"),
+            String::from("largeBlobKey"),
+            String::from("thirdPartyPayment"),
+        ];
+        if supports_mtc {
+            extensions.push(String::from("mtc-debug"));
+        }
+
         Ok(ResponseData::AuthenticatorGetInfo(
             AuthenticatorGetInfoResponse {
                 versions,
-                extensions: Some(vec![
-                    String::from("hmac-secret"),
-                    String::from("hmac-secret-mc"),
-                    String::from("credProtect"),
-                    String::from("minPinLength"),
-                    String::from("credBlob"),
-                    String::from("largeBlobKey"),
-                    String::from("thirdPartyPayment"),
-                    String::from("mtc-debug"),
-                ]),
+                extensions: Some(extensions),
                 aaguid: env.persist().aaguid()?,
                 options: Some(options),
                 max_msg_size: Some(env.customization().max_msg_size() as u64),
@@ -2086,7 +2057,7 @@ impl<E: Env> CtapState<E> {
     }
 
     fn process_selection(&self, env: &mut E, channel: Channel) -> CtapResult<ResponseData> {
-        #[cfg(feature = "up_always_true")]
+        #[cfg(all(feature = "up_always_true", not(test)))]
         {
             let (cid, transport) = match channel {
                 Channel::MainHid(cid) => (cid, Transport::MainHid),
@@ -2128,7 +2099,7 @@ impl<E: Env> CtapState<E> {
             }
             Ok(ResponseData::AuthenticatorSelection)
         }
-        #[cfg(not(feature = "up_always_true"))]
+        #[cfg(not(all(feature = "up_always_true", not(test))))]
         {
             check_user_presence(env, channel)?;
             Ok(ResponseData::AuthenticatorSelection)
@@ -2279,7 +2250,6 @@ mod test {
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
                     String::from("thirdPartyPayment"),
-                    String::from("mtc-debug"),
                 ],
             0x03 => &aaguid[..],
             0x04 => cbor_map_options! {
@@ -2369,7 +2339,6 @@ mod test {
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
                     String::from("thirdPartyPayment"),
-                    String::from("mtc-debug"),
                 ],
             0x03 => &aaguid[..],
             0x04 => cbor_map_options! {
@@ -5829,9 +5798,11 @@ mod test {
                 }
 
                 // Verify "packed" attestation format preference in 0x0B ALWAYS returns fmt: "packed"
-                // with the batch X.509 certificate (`x5c`) and batch key signature!
+                // with the batch X.509 certificate (`x5c`) and batch key signature, and MUST ignore
+                // `"mtc-debug"` even if requested!
                 let mut packed_params = make_params.clone();
                 packed_params.user.user_id = vec![0x14; 16];
+                packed_params.extensions.mtc_debug = true;
                 packed_params.attestation_formats_preference = Some(vec![String::from("packed")]);
                 let packed_resp = ctap_state
                     .process_make_credential(&mut env, packed_params, DUMMY_CHANNEL)
@@ -5846,13 +5817,21 @@ mod test {
                         );
                         assert!(pr.att_stmt.pub_key.is_none());
                         assert!(pr.att_stmt.mtc_cert.is_none());
+                        assert_eq!(
+                            pr.auth_data[32] & ED_FLAG,
+                            0,
+                            "mtc-debug must be suppressed when fmt is packed"
+                        );
+                        assert!(mtc::extract_mtc_debug_from_auth_data(&pr.auth_data).is_none());
                     }
                     _ => panic!("Expected AuthenticatorMakeCredential"),
                 }
 
-                // Verify "none" attestation format preference returns fmt: "none" with empty attStmt.
+                // Verify "none" attestation format preference returns fmt: "none" with empty attStmt,
+                // and MUST explicitly disallow / suppress `"mtc-debug"` even when requested!
                 let mut none_params = make_params.clone();
                 none_params.user.user_id = vec![0x13; 16];
+                none_params.extensions.mtc_debug = true;
                 none_params.attestation_formats_preference = Some(vec![String::from("none")]);
                 let none_resp = ctap_state
                     .process_make_credential(&mut env, none_params, DUMMY_CHANNEL)
@@ -5863,6 +5842,12 @@ mod test {
                         assert!(nr.att_stmt.sig.is_empty());
                         assert!(nr.att_stmt.pub_key.is_none());
                         assert!(nr.att_stmt.mtc_cert.is_none());
+                        assert_eq!(
+                            nr.auth_data[32] & ED_FLAG,
+                            0,
+                            "mtc-debug must be suppressed when fmt is none"
+                        );
+                        assert!(mtc::extract_mtc_debug_from_auth_data(&nr.auth_data).is_none());
                     }
                     _ => panic!("Expected AuthenticatorMakeCredential"),
                 }
@@ -5870,18 +5855,22 @@ mod test {
                 // Verify that requesting `"mtc-debug": true` on non-Enterprise MakeCredential
                 // populates `authData.extensions["mtc-debug"]` with the 6 non-enterprise fields
                 // (`pubKey`, `mtcProof`, `notAfter`, `rootHash`, `notBefore`, `firmwareVersion`) and
-                // strictly OMITS `"deviceSerial"` (Privacy Gate).
+                // strictly OMITS `"deviceSerial"` (Privacy Gate), while `attStmt.mtcCert` on the wire
+                // is the ultra-compact 2-field `mtcKeyRef` (`{ caId, serial }`).
                 let mut debug_params = make_params.clone();
                 debug_params.user.user_id = vec![0x22; 16];
                 debug_params.extensions.mtc_debug = true;
                 let debug_resp = ctap_state
                     .process_make_credential(&mut env, debug_params, DUMMY_CHANNEL)
                     .unwrap();
-                match debug_resp {
+                let debug_auth_data = match debug_resp {
                     ResponseData::AuthenticatorMakeCredential(dr) => {
                         assert_eq!(dr.fmt, "mtc");
                         assert!(dr.att_stmt.pub_key.is_none());
-                        assert_eq!(dr.att_stmt.mtc_cert.as_ref(), Some(&mtc_cert_desc));
+                        assert_eq!(
+                            dr.att_stmt.mtc_cert.as_ref(),
+                            Some(&mtc_cert_desc.to_key_ref())
+                        );
                         assert_ne!(dr.auth_data[32] & ED_FLAG, 0);
                         let mut expected_debug_ext = Vec::new();
                         cbor_write(
@@ -5902,9 +5891,10 @@ mod test {
                             dr.auth_data.ends_with(&expected_debug_ext),
                             "Non-enterprise mtc-debug extension output must include 6 fields and omit deviceSerial"
                         );
+                        dr.auth_data
                     }
                     _ => panic!("Expected AuthenticatorMakeCredential"),
-                }
+                };
 
                 // Check full CBOR wire size of the MakeCredential response.
                 let mut wire_cbor = Vec::new();
@@ -5936,7 +5926,10 @@ mod test {
                         assert_eq!(r.att_stmt.alg, att_alg as i64);
                         assert!(r.att_stmt.x5c.is_none());
                         assert!(r.att_stmt.pub_key.is_none());
-                        assert_eq!(r.att_stmt.mtc_cert.as_ref(), Some(&mtc_cert_desc));
+                        assert_eq!(
+                            r.att_stmt.mtc_cert.as_ref(),
+                            Some(&mtc_cert_desc.to_key_ref())
+                        );
                         // With "mtc" omitting pubKey on the wire, ALL three (ML-DSA-44, ML-DSA-65, and ML-DSA-87!)
                         // fit inside a single 7,609-byte USB HID message!
                         assert!(
@@ -6128,7 +6121,7 @@ mod test {
                         );
 
                         // Negative Test 2: Tampered AAGUID in authData causes Merkle root mismatch.
-                        let mut bad_auth_data = r.auth_data.clone();
+                        let mut bad_auth_data = debug_auth_data.clone();
                         bad_auth_data[37] ^= 0xFF;
                         assert_eq!(
                             verify_mtc_cert_and_resolve_pubkey::<Sha<TestEnv>>(

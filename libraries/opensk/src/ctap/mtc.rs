@@ -309,7 +309,7 @@ impl ProvisionedMtcAttestation {
             let x5c = x5c.map(extract_byte_string).transpose().ok()?;
             let classical_key = c_key.map(extract_byte_string).transpose().ok()?;
             let classical_x5c = c_x5c.map(extract_byte_string).transpose().ok()?;
-            let key_ref_flag = key_ref.map(extract_bool).transpose().ok()?.unwrap_or(false)
+            let key_ref_flag = key_ref.map(extract_bool).transpose().ok()?.unwrap_or(true)
                 || fmt_str == MTC_KEYREF_FORMAT_STR;
             let cert = MtcCertDescriptor::try_from(mtc_cert?).ok()?;
             Some(Self {

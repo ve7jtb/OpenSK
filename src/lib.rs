@@ -52,11 +52,14 @@ fn main() -> ! {
         }
         if let Some(recv_packet) = recv_packet {
             for send_packet in opensk_ctap.process_hid_packet(&recv_packet, Transport::MainHid) {
-                opensk_ctap
+                if opensk_ctap
                     .env()
                     .hid_connection()
                     .send(&send_packet, UsbEndpoint::MainHid)
-                    .unwrap();
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
         #[cfg(feature = "ctap1")]
