@@ -668,6 +668,10 @@ def main(args):
                 )
             )
         landmark_root = compute_subtree_hash(leaf_hashes)
+        for bk_entry in batch_keys_entries:
+            bk_idx = bk_entry["serial"] & 0xFFFFFFFFFFFF
+            bk_path = compute_inclusion_proof(bk_idx, leaf_hashes)
+            bk_entry["inclusionPath"] = [b64url_encode(h) for h in bk_path]
         inclusion_path = compute_inclusion_proof(our_index, leaf_hashes)
         mtc_proof_bytes = encode_mtc_proof_tls(0, batch_size, inclusion_path)
 
