@@ -1183,6 +1183,7 @@ mod test {
         test_helper_process_change_pin(PinUvAuthProtocol::V2);
     }
 
+    #[cfg(feature = "config_command")]
     fn test_helper_process_change_pin_force_pin_change(pin_uv_auth_protocol: PinUvAuthProtocol) {
         let (mut client_pin, mut params) =
             create_client_pin_and_parameters(pin_uv_auth_protocol, ClientPinSubCommand::ChangePin);
@@ -1223,11 +1224,13 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_change_pin_force_pin_change_v1() {
         test_helper_process_change_pin_force_pin_change(PinUvAuthProtocol::V1);
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_change_pin_force_pin_change_v2() {
         test_helper_process_change_pin_force_pin_change(PinUvAuthProtocol::V2);
     }
@@ -1299,6 +1302,7 @@ mod test {
         test_helper_process_get_pin_token(PinUvAuthProtocol::V2);
     }
 
+    #[cfg(feature = "config_command")]
     fn test_helper_process_get_pin_token_force_pin_change(pin_uv_auth_protocol: PinUvAuthProtocol) {
         let (mut client_pin, params) = create_client_pin_and_parameters(
             pin_uv_auth_protocol,
@@ -1315,11 +1319,13 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_get_pin_token_force_pin_change_v1() {
         test_helper_process_get_pin_token_force_pin_change(PinUvAuthProtocol::V1);
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_get_pin_token_force_pin_change_v2() {
         test_helper_process_get_pin_token_force_pin_change(PinUvAuthProtocol::V2);
     }
@@ -1558,6 +1564,7 @@ mod test {
         test_helper_process_get_pin_uv_auth_token_using_pin_with_permissions(PinUvAuthProtocol::V2);
     }
 
+    #[cfg(feature = "config_command")]
     fn test_helper_process_get_pin_uv_auth_token_using_pin_with_permissions_force_pin_change(
         pin_uv_auth_protocol: PinUvAuthProtocol,
     ) {
@@ -1576,6 +1583,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_get_pin_uv_auth_token_using_pin_with_permissions_force_pin_change_v1() {
         test_helper_process_get_pin_uv_auth_token_using_pin_with_permissions_force_pin_change(
             PinUvAuthProtocol::V1,
@@ -1583,6 +1591,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "config_command")]
     fn test_process_get_pin_uv_auth_token_using_pin_with_permissions_force_pin_change_v2() {
         test_helper_process_get_pin_uv_auth_token_using_pin_with_permissions_force_pin_change(
             PinUvAuthProtocol::V2,
@@ -2099,6 +2108,12 @@ mod test {
         let mut env = TestEnv::default();
         set_standard_pin(&mut env);
         params.permissions = Some(0xFF);
+        #[cfg(not(feature = "config_command"))]
+        {
+            params.permissions = params
+                .permissions
+                .map(|p| p & !(PinPermission::AuthenticatorConfiguration as u8));
+        }
 
         assert!(
             client_pin
@@ -2106,6 +2121,10 @@ mod test {
                 .is_ok()
         );
         for permission in PinPermission::into_enum_iter() {
+            #[cfg(not(feature = "config_command"))]
+            if matches!(permission, PinPermission::AuthenticatorConfiguration) {
+                continue;
+            }
             assert_eq!(
                 client_pin
                     .pin_uv_auth_token_state
@@ -2162,6 +2181,10 @@ mod test {
                 .is_ok()
         );
         for permission in PinPermission::into_enum_iter() {
+            #[cfg(not(feature = "config_command"))]
+            if matches!(permission, PinPermission::AuthenticatorConfiguration) {
+                continue;
+            }
             assert_eq!(
                 client_pin
                     .pin_uv_auth_token_state
