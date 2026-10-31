@@ -64,6 +64,17 @@ impl EcSecretKey for SecretKey {
         signature
     }
 
+    fn sign_prehash(&self, digest: &[u8; EC_FIELD_SIZE]) -> Self::Signature {
+        let mut signature = Signature {
+            r: [0; 32],
+            s: [0; 32],
+        };
+        self.0
+            .sign_prehash(digest, &mut signature.r, &mut signature.s)
+            .unwrap();
+        signature
+    }
+
     fn export(&self) -> Vec<u8> {
         self.0.export().unwrap().into_vec()
     }

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod apdu;
+pub mod arkg;
 mod client_pin;
 pub mod command;
 #[cfg(feature = "config_command")]
@@ -29,6 +30,7 @@ mod large_blobs;
 pub mod main_hid;
 pub mod mtc;
 mod pin_protocol;
+pub mod preview_sign;
 pub mod response;
 pub mod secret;
 pub mod status_code;
@@ -1240,12 +1242,7 @@ impl<E: Env> CtapState<E> {
         let public_cose_key = private_key.get_pub_key()?;
         cbor_write(cbor::Value::from(public_cose_key), &mut auth_data)?;
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum SelectedAttestationFormat {
-            Mtc,
-            Packed,
-            NoneFormat,
-        }
+        use preview_sign::SelectedAttestationFormat;
 
         let explicit_mtc_pref = attestation_formats_preference.as_deref().is_some_and(|prefs| {
             prefs.iter().any(|pref| {
@@ -1316,14 +1313,57 @@ impl<E: Env> CtapState<E> {
 
         // WebAuthn Level 4 §10.2.1 Attestation Format Gate:
         // `mtc-debug` is ONLY allowed when the attestation statement format is `"mtc"`,
-        // and is explicitly disallowed when `fmt` is `"none"` or any format other than `"mtc"`.
+        // and is explicitly gated when `fmt` is `"none"` or any format other than `"mtc"`.
         let include_mtc_debug =
             extensions.mtc_debug && selected_format == SelectedAttestationFormat::Mtc;
+        let (preview_sign_output, preview_sign_unsigned) =
+            if let Some(ref ps4_input) = extensions.preview_sign {
+                let res = preview_sign::process_preview_sign_4(
+                    env,
+                    ps4_input,
+                    &rp_id_hash,
+                    flags,
+                    &client_data_hash,
+                    &private_key,
+                    Some(selected_format),
+                    ep_att,
+                )?;
+                (Some(res.signed_output), res.unsigned_output)
+            } else {
+                (None, None)
+            };
+        let (preview_sign_5_output, preview_sign_5_unsigned) =
+            if let Some(ref ps5_input) = extensions.preview_sign_5 {
+                let res = preview_sign::process_preview_sign_5(
+                    env,
+                    ps5_input,
+                    &rp_id_hash,
+                    flags,
+                    &client_data_hash,
+                    &private_key,
+                    Some(selected_format),
+                    ep_att,
+                )?;
+                (Some(res.signed_output), res.unsigned_output)
+            } else {
+                (None, None)
+            };
+        let unsigned_extension_outputs =
+            if preview_sign_unsigned.is_some() || preview_sign_5_unsigned.is_some() {
+                Some(cbor_map_options! {
+                    "previewSign" => preview_sign_unsigned,
+                    "previewSign5" => preview_sign_5_unsigned,
+                })
+            } else {
+                None
+            };
         let has_extension_output = extensions.hmac_secret
             || extensions.cred_protect.is_some()
             || min_pin_length
             || has_cred_blob_output
-            || include_mtc_debug;
+            || include_mtc_debug
+            || preview_sign_output.is_some()
+            || preview_sign_5_output.is_some();
         if has_extension_output {
             auth_data[32] |= ED_FLAG;
             let hmac_secret_output = if extensions.hmac_secret {
@@ -1417,7 +1457,9 @@ impl<E: Env> CtapState<E> {
                 "mtc-debug" => mtc_debug_output,
                 "credProtect" => cred_protect_output,
                 "hmac-secret" => hmac_secret_output,
+                "previewSign" => preview_sign_output,
                 "minPinLength" => min_pin_length_output,
+                "previewSign5" => preview_sign_5_output,
                 "hmac-secret-mc" => hmac_secret_mc_output,
             };
             cbor_write(extensions_output, &mut auth_data)?;
@@ -1550,6 +1592,7 @@ impl<E: Env> CtapState<E> {
                 att_stmt: attestation_statement,
                 ep_att,
                 large_blob_key,
+                unsigned_extension_outputs,
             },
         ))
     }
@@ -1588,7 +1631,59 @@ impl<E: Env> CtapState<E> {
 
         let private_key = PrivateKey::from_cbor(credential.wrapped_private_key)?;
         // Process extensions.
-        if extensions.hmac_secret.is_some() || extensions.cred_blob || extensions.third_party_payment {
+        let (preview_sign_output, preview_sign_unsigned) =
+            if let Some(ref ps4_input) = extensions.preview_sign {
+                let mut rp_id_hash = [0u8; 32];
+                rp_id_hash.copy_from_slice(&auth_data[..32]);
+                let outer_flags = auth_data[32];
+                let res = preview_sign::process_preview_sign_4(
+                    env,
+                    ps4_input,
+                    &rp_id_hash,
+                    outer_flags,
+                    &client_data_hash,
+                    &private_key,
+                    None,
+                    false,
+                )?;
+                (Some(res.signed_output), res.unsigned_output)
+            } else {
+                (None, None)
+            };
+        let (preview_sign_5_output, preview_sign_5_unsigned) =
+            if let Some(ref ps5_input) = extensions.preview_sign_5 {
+                let mut rp_id_hash = [0u8; 32];
+                rp_id_hash.copy_from_slice(&auth_data[..32]);
+                let outer_flags = auth_data[32];
+                let res = preview_sign::process_preview_sign_5(
+                    env,
+                    ps5_input,
+                    &rp_id_hash,
+                    outer_flags,
+                    &client_data_hash,
+                    &private_key,
+                    None,
+                    false,
+                )?;
+                (Some(res.signed_output), res.unsigned_output)
+            } else {
+                (None, None)
+            };
+        let unsigned_extension_outputs =
+            if preview_sign_unsigned.is_some() || preview_sign_5_unsigned.is_some() {
+                Some(cbor_map_options! {
+                    "previewSign" => preview_sign_unsigned,
+                    "previewSign5" => preview_sign_5_unsigned,
+                })
+            } else {
+                None
+            };
+        if extensions.hmac_secret.is_some()
+            || extensions.cred_blob
+            || extensions.third_party_payment
+            || preview_sign_output.is_some()
+            || preview_sign_5_output.is_some()
+        {
             let encrypted_output = if let Some(hmac_secret_input) = extensions.hmac_secret {
                 let cred_random = self.generate_cred_random(env, &private_key, has_uv)?;
                 Some(
@@ -1612,6 +1707,8 @@ impl<E: Env> CtapState<E> {
             let extensions_output = cbor_map_options! {
                 "credBlob" => cred_blob,
                 "hmac-secret" => encrypted_output,
+                "previewSign" => preview_sign_output,
+                "previewSign5" => preview_sign_5_output,
                 "thirdPartyPayment" => third_party_payment,
             };
             cbor_write(extensions_output, &mut auth_data)?;
@@ -1653,6 +1750,7 @@ impl<E: Env> CtapState<E> {
             user,
             number_of_credentials: number_of_credentials.map(|n| n as u64),
             large_blob_key,
+            unsigned_extension_outputs,
         };
         // Only returned for the first GetAssertion, not for Next calls.
         if is_next {
@@ -1716,6 +1814,11 @@ impl<E: Env> CtapState<E> {
             // The extension is actually supported, but we need user presence.
             return Err(Ctap2StatusCode::CTAP2_ERR_UNSUPPORTED_OPTION);
         }
+        if extensions.preview_sign.is_some()
+            && allow_list.as_ref().is_none_or(|list| list.is_empty())
+        {
+            return Err(Ctap2StatusCode::CTAP2_ERR_INVALID_OPTION);
+        }
 
         let has_pin_uv_auth_param = pin_uv_auth_param.is_some();
         let mut flags = match pin_uv_auth_param {
@@ -1760,7 +1863,12 @@ impl<E: Env> CtapState<E> {
         if options.up {
             flags |= UP_FLAG;
         }
-        if extensions.hmac_secret.is_some() || extensions.cred_blob || extensions.third_party_payment {
+        if extensions.hmac_secret.is_some()
+            || extensions.cred_blob
+            || extensions.third_party_payment
+            || extensions.preview_sign.is_some()
+            || extensions.preview_sign_5.is_some()
+        {
             flags |= ED_FLAG;
         }
 
@@ -1944,6 +2052,8 @@ impl<E: Env> CtapState<E> {
             String::from("credBlob"),
             String::from("largeBlobKey"),
             String::from("thirdPartyPayment"),
+            String::from("previewSign"),
+            String::from("previewSign5"),
         ];
         if supports_mtc {
             extensions.push(String::from("mtc-debug"));
@@ -2186,6 +2296,7 @@ mod test {
                     att_stmt,
                     ep_att,
                     large_blob_key,
+                    unsigned_extension_outputs: _,
                 } = make_credential_response;
                 // The expected response is split to only assert the non-random parts.
                 assert_eq!(fmt, "packed");
@@ -2256,6 +2367,8 @@ mod test {
                     String::from("credBlob"),
                     String::from("largeBlobKey"),
                     String::from("thirdPartyPayment"),
+                    String::from("previewSign"),
+                    String::from("previewSign5"),
                 ],
             0x03 => &aaguid[..],
             0x04 => cbor_map_options! {
@@ -5838,6 +5951,7 @@ mod test {
                             },
                             ep_att: r.ep_att,
                             large_blob_key: r.large_blob_key.clone(),
+                            unsigned_extension_outputs: r.unsigned_extension_outputs.clone(),
                         }
                         .into(),
                     ),

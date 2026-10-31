@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use hmac::Mac;
 use hmac::digest::FixedOutput;
-use p256::ecdh::EphemeralSecret;
+use p256::ecdsa::signature::hazmat::PrehashSigner as _;
 use p256::ecdsa::signature::{SignatureEncoding, Signer as _};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use sha2::Digest;
@@ -69,7 +69,7 @@ impl ecdh::Ecdh for SoftwareEcdh {
 }
 
 pub struct SoftwareEcdhSecretKey {
-    ephemeral_secret: EphemeralSecret,
+    secret_key: p256::SecretKey,
 }
 
 impl ecdh::SecretKey for SoftwareEcdhSecretKey {
@@ -77,17 +77,25 @@ impl ecdh::SecretKey for SoftwareEcdhSecretKey {
     type SharedSecret = SoftwareEcdhSharedSecret;
 
     fn random(rng: &mut impl Rng) -> Self {
-        let ephemeral_secret = EphemeralSecret::random(rng);
-        Self { ephemeral_secret }
+        let secret_key = p256::SecretKey::random(rng);
+        Self { secret_key }
+    }
+
+    fn from_bytes(bytes: &[u8; EC_FIELD_SIZE]) -> Option<Self> {
+        let secret_key = p256::SecretKey::from_slice(bytes).ok()?;
+        Some(Self { secret_key })
     }
 
     fn public_key(&self) -> Self::PublicKey {
-        let public_key = self.ephemeral_secret.public_key();
+        let public_key = self.secret_key.public_key();
         SoftwareEcdhPublicKey { public_key }
     }
 
     fn diffie_hellman(&self, public_key: &SoftwareEcdhPublicKey) -> Self::SharedSecret {
-        let shared_secret = self.ephemeral_secret.diffie_hellman(&public_key.public_key);
+        let shared_secret = p256::ecdh::diffie_hellman(
+            self.secret_key.to_nonzero_scalar(),
+            public_key.public_key.as_affine(),
+        );
         SoftwareEcdhSharedSecret { shared_secret }
     }
 }
@@ -147,6 +155,11 @@ impl ec_signing::EcSecretKey for SoftwareEcdsaSecretKey {
 
     fn sign(&self, message: &[u8]) -> Self::Signature {
         let signature = self.signing_key.sign(message);
+        SoftwareEcdsaSignature { signature }
+    }
+
+    fn sign_prehash(&self, digest: &[u8; EC_FIELD_SIZE]) -> Self::Signature {
+        let signature = self.signing_key.sign_prehash(digest).unwrap();
         SoftwareEcdsaSignature { signature }
     }
 

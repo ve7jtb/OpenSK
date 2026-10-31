@@ -73,6 +73,7 @@ pub struct AuthenticatorMakeCredentialResponse {
     pub att_stmt: PackedAttestationStatement,
     pub ep_att: Option<bool>,
     pub large_blob_key: Option<Vec<u8>>,
+    pub unsigned_extension_outputs: Option<cbor::Value>,
 }
 
 impl core::fmt::Debug for AuthenticatorMakeCredentialResponse {
@@ -83,6 +84,7 @@ impl core::fmt::Debug for AuthenticatorMakeCredentialResponse {
             .field("att_stmt", &self.att_stmt)
             .field("ep_att", &self.ep_att)
             .field("large_blob_key", &self.large_blob_key.as_ref().map(|k| TruncatedBytes(k)))
+            .field("unsigned_extension_outputs", &self.unsigned_extension_outputs)
             .finish()
     }
 }
@@ -95,6 +97,7 @@ impl From<AuthenticatorMakeCredentialResponse> for cbor::Value {
             att_stmt,
             ep_att,
             large_blob_key,
+            unsigned_extension_outputs,
         } = make_credential_response;
 
         cbor_map_options! {
@@ -103,6 +106,7 @@ impl From<AuthenticatorMakeCredentialResponse> for cbor::Value {
             0x03 => att_stmt,
             0x04 => ep_att,
             0x05 => large_blob_key,
+            0x06 => unsigned_extension_outputs,
         }
     }
 }
@@ -116,6 +120,7 @@ pub struct AuthenticatorGetAssertionResponse {
     pub number_of_credentials: Option<u64>,
     // 0x06: userSelected missing as we don't support displays.
     pub large_blob_key: Option<Vec<u8>>,
+    pub unsigned_extension_outputs: Option<cbor::Value>,
 }
 
 impl core::fmt::Debug for AuthenticatorGetAssertionResponse {
@@ -127,6 +132,7 @@ impl core::fmt::Debug for AuthenticatorGetAssertionResponse {
             .field("user", &self.user)
             .field("number_of_credentials", &self.number_of_credentials)
             .field("large_blob_key", &self.large_blob_key.as_ref().map(|k| TruncatedBytes(k)))
+            .field("unsigned_extension_outputs", &self.unsigned_extension_outputs)
             .finish()
     }
 }
@@ -140,6 +146,7 @@ impl From<AuthenticatorGetAssertionResponse> for cbor::Value {
             user,
             number_of_credentials,
             large_blob_key,
+            unsigned_extension_outputs,
         } = get_assertion_response;
 
         cbor_map_options! {
@@ -149,6 +156,7 @@ impl From<AuthenticatorGetAssertionResponse> for cbor::Value {
             0x04 => user,
             0x05 => number_of_credentials,
             0x07 => large_blob_key,
+            0x08 => unsigned_extension_outputs,
         }
     }
 }
@@ -432,6 +440,7 @@ mod test {
             att_stmt,
             ep_att: Some(true),
             large_blob_key: Some(vec![0x1B]),
+            unsigned_extension_outputs: None,
         };
         let response_cbor: Option<cbor::Value> =
             ResponseData::AuthenticatorMakeCredential(make_credential_response).into();
@@ -465,6 +474,7 @@ mod test {
             user: Some(user),
             number_of_credentials: Some(2),
             large_blob_key: Some(vec![0x1B]),
+            unsigned_extension_outputs: None,
         };
         let response_cbor: Option<cbor::Value> =
             ResponseData::AuthenticatorGetAssertion(get_assertion_response).into();

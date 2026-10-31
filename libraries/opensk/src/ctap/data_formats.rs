@@ -379,6 +379,8 @@ pub struct MakeCredentialExtensions {
     pub large_blob_key: Option<bool>,
     pub third_party_payment: bool,
     pub mtc_debug: bool,
+    pub preview_sign: Option<super::preview_sign::PreviewSign4Input>,
+    pub preview_sign_5: Option<super::preview_sign::PreviewSign5Input>,
 }
 
 impl TryFrom<cbor::Value> for MakeCredentialExtensions {
@@ -391,8 +393,10 @@ impl TryFrom<cbor::Value> for MakeCredentialExtensions {
                 "mtc-debug" => mtc_debug,
                 "credProtect" => cred_protect,
                 "hmac-secret" => hmac_secret,
+                "previewSign" => preview_sign,
                 "largeBlobKey" => large_blob_key,
                 "minPinLength" => min_pin_length,
+                "previewSign5" => preview_sign_5,
                 "hmac-secret-mc" => hmac_secret_mc,
                 "thirdPartyPayment" => third_party_payment,
             } = extract_map(cbor_value)?;
@@ -413,6 +417,12 @@ impl TryFrom<cbor::Value> for MakeCredentialExtensions {
         let large_blob_key = large_blob_key.map(extract_bool).transpose()?;
         let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
         let mtc_debug = mtc_debug.map_or(Ok(false), extract_bool)?;
+        let preview_sign = preview_sign
+            .map(|v| super::preview_sign::PreviewSign4Input::try_from_cbor(v, true))
+            .transpose()?;
+        let preview_sign_5 = preview_sign_5
+            .map(|v| super::preview_sign::PreviewSign5Input::try_from_cbor(v, true))
+            .transpose()?;
         if let Some(large_blob_key) = large_blob_key
             && !large_blob_key
         {
@@ -427,6 +437,8 @@ impl TryFrom<cbor::Value> for MakeCredentialExtensions {
             large_blob_key,
             third_party_payment,
             mtc_debug,
+            preview_sign,
+            preview_sign_5,
         })
     }
 }
@@ -438,6 +450,8 @@ pub struct GetAssertionExtensions {
     pub cred_blob: bool,
     pub large_blob_key: Option<bool>,
     pub third_party_payment: bool,
+    pub preview_sign: Option<super::preview_sign::PreviewSign4Input>,
+    pub preview_sign_5: Option<super::preview_sign::PreviewSign5Input>,
 }
 
 impl TryFrom<cbor::Value> for GetAssertionExtensions {
@@ -448,7 +462,9 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
             let {
                 "credBlob" => cred_blob,
                 "hmac-secret" => hmac_secret,
+                "previewSign" => preview_sign,
                 "largeBlobKey" => large_blob_key,
+                "previewSign5" => preview_sign_5,
                 "thirdPartyPayment" => third_party_payment,
             } = extract_map(cbor_value)?;
         }
@@ -459,6 +475,12 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
         let cred_blob = cred_blob.map_or(Ok(false), extract_bool)?;
         let large_blob_key = large_blob_key.map(extract_bool).transpose()?;
         let third_party_payment = third_party_payment.map_or(Ok(false), extract_bool)?;
+        let preview_sign = preview_sign
+            .map(|v| super::preview_sign::PreviewSign4Input::try_from_cbor(v, false))
+            .transpose()?;
+        let preview_sign_5 = preview_sign_5
+            .map(|v| super::preview_sign::PreviewSign5Input::try_from_cbor(v, false))
+            .transpose()?;
         if let Some(large_blob_key) = large_blob_key
             && !large_blob_key
         {
@@ -469,6 +491,8 @@ impl TryFrom<cbor::Value> for GetAssertionExtensions {
             cred_blob,
             large_blob_key,
             third_party_payment,
+            preview_sign,
+            preview_sign_5,
         })
     }
 }
@@ -2388,6 +2412,8 @@ mod test {
             large_blob_key: Some(true),
             third_party_payment: false,
             mtc_debug: true,
+            preview_sign: None,
+            preview_sign_5: None,
         };
         assert_eq!(extensions, Ok(expected_extensions));
     }
@@ -2461,6 +2487,8 @@ mod test {
             cred_blob: true,
             large_blob_key: Some(true),
             third_party_payment: false,
+            preview_sign: None,
+            preview_sign_5: None,
         };
         assert_eq!(extensions, Ok(expected_extensions));
     }
@@ -2490,6 +2518,8 @@ mod test {
             cred_blob: true,
             large_blob_key: Some(true),
             third_party_payment: false,
+            preview_sign: None,
+            preview_sign_5: None,
         };
         assert_eq!(extensions, Ok(expected_extensions));
         // TODO more tests, check default

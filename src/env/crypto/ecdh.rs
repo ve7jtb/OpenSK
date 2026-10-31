@@ -36,11 +36,18 @@ impl ecdh::SecretKey for SecretKey {
     fn random(rng: &mut impl Rng) -> Self {
         loop {
             let bytes = rng.gen_uniform_u8x32();
-            if let Ok(private) = Private::import_testonly(&bytes) {
-                if private.public().is_ok() {
-                    return SecretKey(private);
-                }
+            if let Some(secret) = Self::from_bytes(&bytes) {
+                return secret;
             }
+        }
+    }
+
+    fn from_bytes(bytes: &[u8; EC_FIELD_SIZE]) -> Option<Self> {
+        let private = Private::import_testonly(bytes).ok()?;
+        if private.public().is_ok() {
+            Some(SecretKey(private))
+        } else {
+            None
         }
     }
 

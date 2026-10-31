@@ -1,0 +1,101 @@
+Flashing target: nrf52840dk
+With features: ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,debug
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running `target/debug/xtask --native applet rust ../.. --opt-level=z --features=ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,debug runner nordic --single-sided --log=info --opt-level=z --features=usb-ctap --features=software-crypto-aes256-cbc,software-crypto-hmac-sha256,software-crypto-p256-ecdh,software-crypto-p256-ecdsa,software-crypto-ed25519`
+[1;36mcd "../.." && RUSTFLAGS="" WASEFIRE_DEBUG="" "cargo" "+nightly-2026-06-03" "rustc" "--lib" "--config=profile.release.codegen-units=1" "--config=profile.release.lto=true" "--config=profile.release.panic=\"abort\"" "--crate-type=staticlib" "--target=thumbv7em-none-eabi" "--features=wasefire/native" "--profile=release" "--config=profile.release.opt-level=\"z\"" "--features=ctap1,config-command,ed25519,ed448,es384,es512,es256k,mldsa,pq-composite,rs256,fndsa,no-reset-restrictions,debug" "--config=profile.release.package.ml-dsa.opt-level=3" "--config=profile.release.package.module-lattice.opt-level=3" "--config=profile.release.package.shake.opt-level=3" "--config=profile.release.package.crypto-bigint.opt-level=3" "--config=profile.release.package.fn-dsa.opt-level=3" "--config=profile.release.package.fn-dsa-comm.opt-level=3" "--config=profile.release.package.fn-dsa-kgen.opt-level=3" "--config=profile.release.package.fn-dsa-sign.opt-level=3" "--config=profile.release.package.fn-dsa-vrfy.opt-level=3"[m
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.18
+   Compiling quote v1.0.45
+   Compiling typenum v1.18.0
+   Compiling version_check v0.9.5
+   Compiling rand_core v0.6.4
+   Compiling subtle v2.6.1
+   Compiling const-oid v0.9.6
+   Compiling cmov v0.5.4
+   Compiling cfg-if v1.0.0
+   Compiling base16ct v0.2.0
+   Compiling rustversion v1.0.22
+   Compiling portable-atomic v1.13.1
+   Compiling data-encoding v2.11.0
+   Compiling autocfg v1.5.1
+   Compiling keccak v0.2.2
+   Compiling ff v0.13.1
+   Compiling fn-dsa-comm v0.4.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/fn-dsa/fn-dsa-comm)
+   Compiling sponge-cursor v0.1.0
+   Compiling wasefire-one-of v0.1.3-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/one-of)
+   Compiling portable-atomic-util v0.2.7
+   Compiling ctutils v0.4.3
+   Compiling generic-array v0.14.7
+   Compiling wasefire-logger v0.2.2-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/logger)
+   Compiling group v0.13.0
+   Compiling arrayref v0.3.9
+   Compiling byteorder v1.5.0
+   Compiling fn-dsa-vrfy v0.4.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/fn-dsa/fn-dsa-vrfy)
+   Compiling num-traits v0.2.19
+   Compiling sk-cbor v0.2.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/cbor)
+   Compiling hybrid-array v0.4.10
+   Compiling syn v2.0.117
+   Compiling spin v0.12.3
+   Compiling wasefire-sync v0.1.4-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/sync)
+   Compiling crypto-common v0.2.2
+   Compiling module-lattice v0.2.3
+   Compiling digest v0.11.3
+   Compiling shake v0.1.0
+   Compiling signature v3.0.0
+   Compiling ml-dsa v0.1.1 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/ml-dsa)
+   Compiling zeroize_derive v1.4.2
+   Compiling num_enum_derive v0.7.6
+   Compiling data-encoding-macro-internal v0.1.18
+   Compiling bytemuck_derive v1.10.2
+   Compiling data-encoding-macro v0.1.20
+   Compiling zeroize v1.8.1
+   Compiling num_enum v0.7.6
+   Compiling wasefire-applet-api-desc v0.3.0-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/api-desc)
+   Compiling bytemuck v1.25.0
+   Compiling der v0.7.10
+   Compiling fn-dsa-sign v0.4.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/fn-dsa/fn-dsa-sign)
+   Compiling fn-dsa-kgen v0.4.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/fn-dsa/fn-dsa-kgen)
+   Compiling wasefire-applet-api-macro v0.9.1-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/api-macro)
+   Compiling wasefire-error v0.1.5-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/error)
+   Compiling fn-dsa v0.4.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/fn-dsa/fn-dsa)
+   Compiling wasefire-common v0.1.2-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/common)
+   Compiling crypto-common v0.1.6
+   Compiling block-buffer v0.10.4
+   Compiling crypto-bigint v0.5.5
+   Compiling inout v0.1.4
+   Compiling digest v0.10.7
+   Compiling cipher v0.4.4
+   Compiling wasefire-applet-api v0.9.1-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/api)
+   Compiling hmac v0.12.1
+   Compiling signature v2.2.0
+   Compiling sha2 v0.10.9
+   Compiling sec1 v0.7.3
+   Compiling spki v0.7.3
+   Compiling aes v0.8.4
+   Compiling cbc v0.1.2
+   Compiling rfc6979 v0.4.0
+   Compiling wasefire v0.8.2-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/prelude)
+   Compiling elliptic-curve v0.13.8
+   Compiling ecdsa v0.16.9
+   Compiling primeorder v0.13.6
+   Compiling p384 v0.13.1
+   Compiling p521 v0.13.3
+   Compiling k256 v0.13.4
+   Compiling opensk v0.1.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/libraries/opensk)
+   Compiling opensk-wasefire v0.1.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK)
+    Finished `release` profile [optimized] target(s) in 13.49s
+[1;36mcp "../../target/thumbv7em-none-eabi/release/libopensk_wasefire.a" "target/wasefire/libapplet.a"[m
+[1;36mcd "crates/runner-nordic" && DEFMT_LOG="info" RUSTFLAGS="-C link-arg=--defsym=RUNNER_NATIVE=1 -C link-arg=--defsym=RUNNER_SIDE=0 -C link-arg=--defsym=RUNNER_NUM_SIDES=1 -C link-arg=-Tlink.x --allow=unused-crate-dependencies -C link-arg=-Tdefmt.x" "cargo" "build" "--release" "--target=thumbv7em-none-eabi" "-Zbuild-std=core,alloc" "-Zbuild-std-features=optimize_for_size" "--config=profile.release.codegen-units=1" "--config=profile.release.lto=true" "--config=profile.release.debug=2" "--config=profile.release.opt-level=\"z\"" "--config=profile.release.package.ml-dsa.opt-level=3" "--config=profile.release.package.module-lattice.opt-level=3" "--config=profile.release.package.shake.opt-level=3" "--config=profile.release.package.crypto-bigint.opt-level=3" "--config=profile.release.package.fn-dsa.opt-level=3" "--config=profile.release.package.fn-dsa-comm.opt-level=3" "--config=profile.release.package.fn-dsa-kgen.opt-level=3" "--config=profile.release.package.fn-dsa-sign.opt-level=3" "--config=profile.release.package.fn-dsa-vrfy.opt-level=3" "--features=usb-ctap,software-crypto-aes256-cbc,software-crypto-hmac-sha256,software-crypto-p256-ecdh,software-crypto-p256-ecdsa,software-crypto-ed25519,debug,native,board-devkit"[m
+   Compiling wasefire-scheduler v0.5.2-git (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/scheduler)
+   Compiling runner-nordic v0.1.0 (/Users/jbradley/.gemini/antigravity/scratch/OpenSK/third_party/wasefire/crates/runner-nordic)
+    Finished `release` profile [optimized + debuginfo] target(s) in 5.52s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+[1;36mread < "target/thumbv7em-none-eabi/release/runner-nordic"[m
+[1;36mwrite > "target/thumbv7em-none-eabi/release/runner-nordic"[m
+    Finished `release` profile [optimized] target(s) in 0.12s
+Error: Failed to open probe: Failed to open the debug probe.
+
+Caused by:
+    0: USB Communication Error
+    1: error while taking control over USB device: could not open interface for exclusive access (error 0xe00002c5)

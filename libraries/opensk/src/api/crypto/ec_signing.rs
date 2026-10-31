@@ -45,6 +45,9 @@ pub trait EcSecretKey: Sized {
     /// Signs the message.
     fn sign(&self, message: &[u8]) -> Self::Signature;
 
+    /// Signs a pre-hashed 32-byte digest directly without hashing again.
+    fn sign_prehash(&self, digest: &[u8; EC_FIELD_SIZE]) -> Self::Signature;
+
     /// Returns the wrapped signing key.
     ///
     /// The returned representation needs to be deterministic. If you call this function twice for

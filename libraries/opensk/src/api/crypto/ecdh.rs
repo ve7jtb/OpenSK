@@ -30,6 +30,11 @@ pub trait SecretKey {
     /// Generates a new random secret key.
     fn random(rng: &mut impl Rng) -> Self;
 
+    /// Imports a secret key from its 32-byte big-endian scalar representation.
+    fn from_bytes(bytes: &[u8; EC_FIELD_SIZE]) -> Option<Self>
+    where
+        Self: Sized;
+
     /// Computes the corresponding public key for this private key.
     fn public_key(&self) -> Self::PublicKey;
 

@@ -156,7 +156,8 @@ fn process_vendor_configure(
         }
         env.persist().set_attestation(attestation_id, Some(&data))?;
         if attestation_id == AttestationId::Enterprise {
-            env.persist().enable_enterprise_attestation()?;
+            env.persist()
+                .insert(opensk::api::persist::keys::ENTERPRISE_ATTESTATION, &[])?;
         }
         response.cert_programmed = true;
         response.pkey_programmed = true;
