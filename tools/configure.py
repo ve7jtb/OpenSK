@@ -252,6 +252,18 @@ def sync_mds_metadata_files(
         {"type": "public-key", "alg": alg_id}
         for alg_id in [-7, -35, -36, -47, -8, -53, -48, -49, -50, -54, -55, -56, -57, -58, -59, -60, -61, -257]
     ]
+    canonical_extensions = [
+        "hmac-secret",
+        "hmac-secret-mc",
+        "credProtect",
+        "minPinLength",
+        "credBlob",
+        "largeBlobKey",
+        "thirdPartyPayment",
+        "previewSign",
+        "previewSign5",
+        "mtc-debug",
+    ]
 
     mds_files = [
         "metadata_mldsa44_mtc.json",
@@ -268,6 +280,7 @@ def sync_mds_metadata_files(
         mds["authenticationAlgorithms"] = canonical_auth_algs
         if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
             mds["authenticatorGetInfo"]["algorithms"] = canonical_get_info_algs
+            mds["authenticatorGetInfo"]["extensions"] = canonical_extensions
         if fw_version is not None:
             mds["authenticatorVersion"] = fw_version
             if "authenticatorGetInfo" in mds and isinstance(mds["authenticatorGetInfo"], dict):
