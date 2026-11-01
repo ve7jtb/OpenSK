@@ -950,30 +950,33 @@ pub fn process_preview_sign_5<E: Env>(
                 sk.sign(tbs).to_der()
             }
             COSE_ALG_ESP256_SPLIT | COSE_ALG_ESP256_SPLIT_PLACEHOLDER => {
+                // Per draft-ietf-cose-split-signing-algs-01 § 2.1, the digester performs Step 1
+                // (SHA-256 hashing) and passes the 32-octet digest H as `tbs`; the signer resumes
+                // from Step 2 and MUST NOT re-hash non-32-octet inputs.
+                let Ok(prehash) = <&[u8; HASH_SIZE]>::try_from(tbs.as_slice()) else {
+                    cred_secret.zeroize();
+                    mac_key.zeroize();
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH);
+                };
                 let sk = derive_p256_signing_key::<E>(&cred_secret, &aux_ikm, &kh_params)
                     .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                if tbs.len() == EC_FIELD_SIZE {
-                    sk.sign_prehash(array_ref![tbs, 0, EC_FIELD_SIZE]).to_der()
-                } else {
-                    let digest = Sha::<E>::digest(tbs);
-                    sk.sign_prehash(&digest).to_der()
-                }
+                sk.sign_prehash(prehash).to_der()
             }
             COSE_ALG_ESP256_SPLIT_ARKG => {
+                let Ok(prehash) = <&[u8; HASH_SIZE]>::try_from(tbs.as_slice()) else {
+                    cred_secret.zeroize();
+                    mac_key.zeroize();
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH);
+                };
                 let (kh_arkg, ctx_arkg) = arkg_params.unwrap();
                 let seed = derive_arkg_seed::<E>(&cred_secret, &aux_ikm, &kh_params)
                     .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                let digest_cow = if tbs.len() == EC_FIELD_SIZE {
-                    *array_ref![tbs, 0, EC_FIELD_SIZE]
-                } else {
-                    Sha::<E>::digest(tbs)
-                };
                 let Some(sig) = arkg::derive_and_sign_prehash::<E>(
                     &seed.sk_bl,
                     &seed.sk_kem,
                     &kh_arkg,
                     &ctx_arkg,
-                    &digest_cow,
+                    prehash,
                 ) else {
                     cred_secret.zeroize();
                     mac_key.zeroize();
@@ -1204,30 +1207,30 @@ pub fn process_preview_sign_4<E: Env>(
                 sk.sign(tbs).to_der()
             }
             COSE_ALG_ESP256_SPLIT | COSE_ALG_ESP256_SPLIT_PLACEHOLDER => {
+                let Ok(prehash) = <&[u8; HASH_SIZE]>::try_from(tbs.as_slice()) else {
+                    cred_secret.zeroize();
+                    mac_key.zeroize();
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH);
+                };
                 let sk = derive_p256_signing_key::<E>(&cred_secret, &aux_ikm, &kh_params)
                     .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                if tbs.len() == EC_FIELD_SIZE {
-                    sk.sign_prehash(array_ref![tbs, 0, EC_FIELD_SIZE]).to_der()
-                } else {
-                    let digest = Sha::<E>::digest(tbs);
-                    sk.sign_prehash(&digest).to_der()
-                }
+                sk.sign_prehash(prehash).to_der()
             }
             COSE_ALG_ESP256_SPLIT_ARKG => {
+                let Ok(prehash) = <&[u8; HASH_SIZE]>::try_from(tbs.as_slice()) else {
+                    cred_secret.zeroize();
+                    mac_key.zeroize();
+                    return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH);
+                };
                 let (kh_arkg, ctx_arkg) = arkg_params.unwrap();
                 let seed = derive_arkg_seed::<E>(&cred_secret, &aux_ikm, &kh_params)
                     .ok_or(Ctap2StatusCode::CTAP2_ERR_VENDOR_INTERNAL_ERROR)?;
-                let digest_cow = if tbs.len() == EC_FIELD_SIZE {
-                    *array_ref![tbs, 0, EC_FIELD_SIZE]
-                } else {
-                    Sha::<E>::digest(tbs)
-                };
                 let Some(sig) = arkg::derive_and_sign_prehash::<E>(
                     &seed.sk_bl,
                     &seed.sk_kem,
                     &kh_arkg,
                     &ctx_arkg,
-                    &digest_cow,
+                    prehash,
                 ) else {
                     cred_secret.zeroize();
                     mac_key.zeroize();
@@ -1483,9 +1486,9 @@ mod tests {
             let ga_resp = get_assertion_with_ps5(
                 &mut ctap_state,
                 &mut env,
-                cred_id,
+                cred_id.clone(),
                 cbor_map! {
-                    KEY_KH => kh,
+                    KEY_KH => kh.clone(),
                     KEY_TBS => tbs.clone(),
                 },
                 false,
@@ -1505,10 +1508,67 @@ mod tests {
 
             if alg == COSE_ALG_ESP256 || alg == COSE_ALG_ES256 {
                 use p256::ecdsa::signature::Verifier;
+                use p256::ecdsa::signature::hazmat::PrehashVerifier;
                 assert!(vk.verify(&tbs, &p256_sig).is_ok());
+                assert!(
+                    vk.verify_prehash(&tbs, &p256_sig).is_err(),
+                    "full-signing algorithms (-9, -7) must hash 32-byte tbs rather than treating it as prehash"
+                );
+
+                // Full-signing algorithms (-9, -7) must also accept arbitrary non-32-byte message lengths.
+                for &msg_len in &[0usize, 1, 15, 31, 33, 64, 128] {
+                    let msg = vec![0x5A; msg_len];
+                    let ResponseData::AuthenticatorGetAssertion(ga_msg) = get_assertion_with_ps5(
+                        &mut ctap_state,
+                        &mut env,
+                        cred_id.clone(),
+                        cbor_map! {
+                            KEY_KH => kh.clone(),
+                            KEY_TBS => msg.clone(),
+                        },
+                        false,
+                        None,
+                        None,
+                    )
+                    .unwrap() else {
+                        panic!("Expected GetAssertion");
+                    };
+                    let (_, ga_msg_ext) = parse_auth_data_extensions(&ga_msg.auth_data);
+                    let ga_msg_ps5 =
+                        extract_map(extract_map(ga_msg_ext).unwrap()[0].1.clone()).unwrap();
+                    let msg_sig_der = extract_byte_string(ga_msg_ps5[0].1.clone()).unwrap();
+                    let msg_sig = p256::ecdsa::Signature::from_der(&msg_sig_der).unwrap();
+                    assert!(vk.verify(&msg, &msg_sig).is_ok());
+                }
             } else {
+                use p256::ecdsa::signature::Verifier;
                 use p256::ecdsa::signature::hazmat::PrehashVerifier;
                 assert!(vk.verify_prehash(&tbs, &p256_sig).is_ok());
+                assert!(
+                    vk.verify(&tbs, &p256_sig).is_err(),
+                    "split-signing algorithms (-300, -70009) must sign 32-byte tbs as raw prehash"
+                );
+
+                // Split-signing algorithms (-300, -70009) must reject malformed digest lengths (!= 32 bytes).
+                for &bad_len in &[0usize, 1, 15, 31, 33, 64] {
+                    let bad_tbs = vec![0x42; bad_len];
+                    assert_eq!(
+                        get_assertion_with_ps5(
+                            &mut ctap_state,
+                            &mut env,
+                            cred_id.clone(),
+                            cbor_map! {
+                                KEY_KH => kh.clone(),
+                                KEY_TBS => bad_tbs,
+                            },
+                            false,
+                            None,
+                            None,
+                        ),
+                        Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH),
+                        "split-signing algorithm {alg} must reject tbs length {bad_len}"
+                    );
+                }
             }
         }
     }
@@ -1660,11 +1720,11 @@ mod tests {
         let ga_resp = get_assertion_with_ps5(
             &mut ctap_state,
             &mut env,
-            cred_id,
+            cred_id.clone(),
             cbor_map! {
-                KEY_KH => kh,
+                KEY_KH => kh.clone(),
                 KEY_TBS => tbs.clone(),
-                KEY_ARGS => args_bytes,
+                KEY_ARGS => args_bytes.clone(),
             },
             false,
             None,
@@ -1679,9 +1739,33 @@ mod tests {
         let ga_ps5_out = extract_map(ga_ext_map[0].1.clone()).unwrap();
         let sig_der = extract_byte_string(ga_ps5_out[0].1.clone()).unwrap();
 
+        use p256::ecdsa::signature::Verifier;
         use p256::ecdsa::signature::hazmat::PrehashVerifier;
         let p256_sig = p256::ecdsa::Signature::from_der(&sig_der).unwrap();
         assert!(derived_vk.verify_prehash(&tbs, &p256_sig).is_ok());
+        assert!(derived_vk.verify(&tbs, &p256_sig).is_err());
+
+        // Malformed digest lengths (!= 32 bytes) for ESP256-split-ARKG must return CTAP2_ERR_INVALID_LENGTH.
+        for &bad_len in &[0usize, 1, 15, 31, 33, 64] {
+            let bad_tbs = vec![0x99; bad_len];
+            assert_eq!(
+                get_assertion_with_ps5(
+                    &mut ctap_state,
+                    &mut env,
+                    cred_id.clone(),
+                    cbor_map! {
+                        KEY_KH => kh.clone(),
+                        KEY_TBS => bad_tbs,
+                        KEY_ARGS => args_bytes.clone(),
+                    },
+                    false,
+                    None,
+                    None,
+                ),
+                Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH),
+                "ESP256-split-ARKG must reject tbs length {bad_len}"
+            );
+        }
     }
 
     #[test]
@@ -2292,9 +2376,9 @@ mod tests {
             get_assertion_with_ps4(
                 &mut ctap_state,
                 &mut env,
-                Some(cred_id),
+                Some(cred_id.clone()),
                 cbor_map! {
-                    KEY_KH => kh,
+                    KEY_KH => kh.clone(),
                     KEY_TBS => tbs,
                     KEY_ARGS => bad_alg_args,
                 },
@@ -2302,6 +2386,63 @@ mod tests {
             ),
             Err(Ctap2StatusCode::CTAP2_ERR_INVALID_CREDENTIAL)
         );
+
+        // 8. Non-32-byte message lengths succeed for full-signing ESP256 (-9) in v4, whereas
+        // split-signing algorithms (-300, -70009) reject non-32-byte tbs with CTAP2_ERR_INVALID_LENGTH.
+        for &msg_len in &[0usize, 1, 15, 31, 33, 64] {
+            let msg = vec![0xBB; msg_len];
+            assert!(
+                get_assertion_with_ps4(
+                    &mut ctap_state,
+                    &mut env,
+                    Some(cred_id.clone()),
+                    cbor_map! {
+                        KEY_KH => kh.clone(),
+                        KEY_TBS => msg,
+                    },
+                    false,
+                )
+                .is_ok()
+            );
+        }
+
+        for &split_alg in &[COSE_ALG_ESP256_SPLIT, COSE_ALG_ESP256_SPLIT_PLACEHOLDER] {
+            let ResponseData::AuthenticatorMakeCredential(mc_split) = make_cred_with_ps4(
+                &mut ctap_state,
+                &mut env,
+                cbor_map! {
+                    KEY_ALG => cbor_array![split_alg],
+                    KEY_FLAGS => 0i64,
+                },
+            )
+            .unwrap() else {
+                panic!("Expected AuthenticatorMakeCredential");
+            };
+            let (Some(split_cred_id), _) = parse_auth_data_extensions(&mc_split.auth_data) else {
+                panic!("Expected cred_id");
+            };
+            let split_unsigned = extract_map(mc_split.unsigned_extension_outputs.unwrap()).unwrap();
+            let split_ps4_unsigned = extract_map(split_unsigned[0].1.clone()).unwrap();
+            let split_att_obj_bytes = extract_byte_string(split_ps4_unsigned[0].1.clone()).unwrap();
+            let (split_kh, _, _) = parse_signing_key_att_obj(&split_att_obj_bytes);
+
+            for &bad_len in &[0usize, 1, 15, 31, 33, 64] {
+                let bad_tbs = vec![0xCC; bad_len];
+                assert_eq!(
+                    get_assertion_with_ps4(
+                        &mut ctap_state,
+                        &mut env,
+                        Some(split_cred_id.clone()),
+                        cbor_map! {
+                            KEY_KH => split_kh.clone(),
+                            KEY_TBS => bad_tbs,
+                        },
+                        false,
+                    ),
+                    Err(Ctap2StatusCode::CTAP1_ERR_INVALID_LENGTH)
+                );
+            }
+        }
     }
 
     #[test]
