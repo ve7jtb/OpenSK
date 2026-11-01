@@ -1086,4 +1086,98 @@ mod test {
             Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
         );
     }
+
+    #[test]
+    fn test_process_update_and_delete_rejected_with_pcmr_token() {
+        let mut env = TestEnv::default();
+        let mut ctap_state = CtapState::new(&mut env);
+
+        let mut credential_source = create_credential_source(&mut env);
+        credential_source.credential_id = vec![0x1D; 32];
+        storage::store_credential(&mut env, credential_source.clone()).unwrap();
+        env.persist().set_pin(&[0u8; 16], 4).unwrap();
+
+        let persistent_token = storage::persistent_pin_uv_auth_token(&mut env).unwrap();
+        let credential_id = PublicKeyCredentialDescriptor {
+            key_type: PublicKeyCredentialType::PublicKey,
+            key_id: vec![0x1D; 32],
+            transports: None,
+        };
+
+        // 1. updateUserInformation with pcmr token must fail with CTAP2_ERR_PIN_AUTH_INVALID
+        // and leave the stored credential unchanged.
+        let attempted_user = PublicKeyCredentialUserEntity {
+            user_id: vec![0x01],
+            user_name: Some("attempted_name".to_string()),
+            user_display_name: Some("attempted_display_name".to_string()),
+            user_icon: None,
+        };
+        let update_params = CredentialManagementSubCommandParameters {
+            rp_id_hash: None,
+            credential_id: Some(credential_id.clone()),
+            user: Some(attempted_user),
+        };
+        let mut update_auth_data = vec![CredentialManagementSubCommand::UpdateUserInformation as u8];
+        super::super::cbor_write(update_params.clone().into(), &mut update_auth_data).unwrap();
+        let update_pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &persistent_token,
+            &update_auth_data,
+            PinUvAuthProtocol::V2,
+        );
+        let update_response = process_credential_management(
+            &mut env,
+            &mut ctap_state.stateful_command_permission,
+            &mut ctap_state.client_pin,
+            AuthenticatorCredentialManagementParameters {
+                sub_command: CredentialManagementSubCommand::UpdateUserInformation,
+                sub_command_params: Some(update_params),
+                pin_uv_auth_protocol: Some(PinUvAuthProtocol::V2),
+                pin_uv_auth_param: Some(update_pin_uv_auth_param),
+            },
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            update_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
+        );
+        let stored_after_update = storage::find_credential(&mut env, "example.com", &[0x1D; 32])
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_after_update, credential_source);
+
+        // 2. deleteCredential with pcmr token must fail with CTAP2_ERR_PIN_AUTH_INVALID
+        // and leave the stored credential intact.
+        let delete_params = CredentialManagementSubCommandParameters {
+            rp_id_hash: None,
+            credential_id: Some(credential_id),
+            user: None,
+        };
+        let mut delete_auth_data = vec![CredentialManagementSubCommand::DeleteCredential as u8];
+        super::super::cbor_write(delete_params.clone().into(), &mut delete_auth_data).unwrap();
+        let delete_pin_uv_auth_param = authenticate_pin_uv_auth_token(
+            &persistent_token,
+            &delete_auth_data,
+            PinUvAuthProtocol::V2,
+        );
+        let delete_response = process_credential_management(
+            &mut env,
+            &mut ctap_state.stateful_command_permission,
+            &mut ctap_state.client_pin,
+            AuthenticatorCredentialManagementParameters {
+                sub_command: CredentialManagementSubCommand::DeleteCredential,
+                sub_command_params: Some(delete_params),
+                pin_uv_auth_protocol: Some(PinUvAuthProtocol::V2),
+                pin_uv_auth_param: Some(delete_pin_uv_auth_param),
+            },
+            DUMMY_CHANNEL,
+        );
+        assert_eq!(
+            delete_response,
+            Err(Ctap2StatusCode::CTAP2_ERR_PIN_AUTH_INVALID)
+        );
+        let stored_after_delete = storage::find_credential(&mut env, "example.com", &[0x1D; 32])
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_after_delete, credential_source);
+    }
 }

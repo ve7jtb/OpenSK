@@ -127,6 +127,9 @@ case $TARGET in
       cargo build --manifest-path crates/runner-nordic/crates/bootloader/Cargo.toml \
         --release --target=thumbv7em-none-eabi --features=board-devkit,single-sided \
         -Zbuild-std=core --config='profile.release.panic="immediate-abort"'
+      touch /tmp/opensk_flashing.lock
+      killall -9 probe-rs 2>/dev/null || true
+      sleep 1
       ./scripts/wrapper.sh probe-rs erase --chip=nRF52840_xxAA --allow-erase-all
       ./scripts/wrapper.sh probe-rs download --chip=nRF52840_xxAA target/thumbv7em-none-eabi/release/bootloader
       ./scripts/wrapper.sh probe-rs download --chip=nRF52840_xxAA target/thumbv7em-none-eabi/release/runner-nordic

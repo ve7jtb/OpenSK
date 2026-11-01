@@ -409,6 +409,10 @@ impl<E: Env> ClientPin<E> {
         if permissions == 0 {
             return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
         }
+        let pcmr_permission = PinPermission::PersistentCredentialManagementReadOnly as u8;
+        if permissions & pcmr_permission != 0 && permissions != pcmr_permission {
+            return Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION);
+        }
         // Since credMgmt, uvBioEnroll, perCredMgmtRO and largeBlobs are always true in the options,
         // we only have to check uvAcfg for step 3.4 in CTAP 2.2.
         #[cfg(not(feature = "config_command"))]
@@ -505,6 +509,10 @@ impl<E: Env> ClientPin<E> {
 
         if permissions == 0 {
             return Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER);
+        }
+        let pcmr_permission = PinPermission::PersistentCredentialManagementReadOnly as u8;
+        if permissions & pcmr_permission != 0 && permissions != pcmr_permission {
+            return Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION);
         }
         // Since credMgmt, uvBioEnroll, perCredMgmtRO and largeBlobs are always true in the options,
         // and noMcGaPermissionsWithClientPin and noMcGaPermissionsWithClientPin are both false,
@@ -1394,6 +1402,20 @@ mod test {
             Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)
         );
 
+        for other_perm in [
+            PinPermission::CredentialManagement as u8,
+            PinPermission::MakeCredential as u8,
+            PinPermission::GetAssertion as u8,
+        ] {
+            let mut bad_params = params.clone();
+            bad_params.permissions =
+                Some(PinPermission::PersistentCredentialManagementReadOnly as u8 | other_perm);
+            assert_eq!(
+                client_pin.process_command(&mut env, bad_params, DUMMY_CHANNEL),
+                Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION)
+            );
+        }
+
         let mut bad_params = params;
         bad_params.permissions_rp_id = None;
         assert_eq!(
@@ -1545,6 +1567,20 @@ mod test {
             client_pin.process_command(&mut env, bad_params, DUMMY_CHANNEL),
             Err(Ctap2StatusCode::CTAP1_ERR_INVALID_PARAMETER)
         );
+
+        for other_perm in [
+            PinPermission::CredentialManagement as u8,
+            PinPermission::MakeCredential as u8,
+            PinPermission::GetAssertion as u8,
+        ] {
+            let mut bad_params = params.clone();
+            bad_params.permissions =
+                Some(PinPermission::PersistentCredentialManagementReadOnly as u8 | other_perm);
+            assert_eq!(
+                client_pin.process_command(&mut env, bad_params, DUMMY_CHANNEL),
+                Err(Ctap2StatusCode::CTAP2_ERR_UNAUTHORIZED_PERMISSION)
+            );
+        }
 
         let mut bad_params = params;
         bad_params.pin_hash_enc = Some(vec![0xEE; 16]);
@@ -2107,7 +2143,8 @@ mod test {
         );
         let mut env = TestEnv::default();
         set_standard_pin(&mut env);
-        params.permissions = Some(0xFF);
+        params.permissions =
+            Some(0xFF & !(PinPermission::PersistentCredentialManagementReadOnly as u8));
         #[cfg(not(feature = "config_command"))]
         {
             params.permissions = params
@@ -2121,6 +2158,12 @@ mod test {
                 .is_ok()
         );
         for permission in PinPermission::into_enum_iter() {
+            if matches!(
+                permission,
+                PinPermission::PersistentCredentialManagementReadOnly
+            ) {
+                continue;
+            }
             #[cfg(not(feature = "config_command"))]
             if matches!(permission, PinPermission::AuthenticatorConfiguration) {
                 continue;
@@ -2167,7 +2210,8 @@ mod test {
         );
         let mut env = TestEnv::default();
         set_standard_pin(&mut env);
-        params.permissions = Some(0xFF);
+        params.permissions =
+            Some(0xFF & !(PinPermission::PersistentCredentialManagementReadOnly as u8));
         #[cfg(not(feature = "config_command"))]
         {
             params.permissions = params
@@ -2181,6 +2225,12 @@ mod test {
                 .is_ok()
         );
         for permission in PinPermission::into_enum_iter() {
+            if matches!(
+                permission,
+                PinPermission::PersistentCredentialManagementReadOnly
+            ) {
+                continue;
+            }
             #[cfg(not(feature = "config_command"))]
             if matches!(permission, PinPermission::AuthenticatorConfiguration) {
                 continue;
