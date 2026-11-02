@@ -87,6 +87,7 @@ fn process_set_min_pin_length<E: Env>(
     }
     if env.persist().has_force_pin_change()? {
         client_pin.reset_pin_uv_auth_token(env);
+        storage::reset_persistent_pin_uv_auth_token(env)?;
     }
     storage::set_min_pin_length(env, new_min_pin_length)?;
     Ok(ResponseData::AuthenticatorConfig)
@@ -519,6 +520,7 @@ mod test {
         );
 
         env.persist().set_pin(&[0x88; 16], 4).unwrap();
+        let old_persistent_token = storage::persistent_pin_uv_auth_token(&mut env).unwrap();
         // Increase min PIN, force PIN change.
         let min_pin_length = 6;
         let mut config_params = create_min_pin_config_params(min_pin_length, None);
@@ -532,6 +534,10 @@ mod test {
         assert_eq!(storage::min_pin_length(&mut env), Ok(min_pin_length));
         assert_eq!(env.persist().has_force_pin_change(), Ok(true));
         assert!(!client_pin.has_token(&mut env));
+        assert_ne!(
+            storage::persistent_pin_uv_auth_token(&mut env).unwrap(),
+            old_persistent_token
+        );
     }
 
     #[test]
@@ -547,6 +553,7 @@ mod test {
         );
 
         env.persist().set_pin(&[0x88; 16], 4).unwrap();
+        let old_persistent_token = storage::persistent_pin_uv_auth_token(&mut env).unwrap();
         let pin_uv_auth_param = Some(vec![
             0xE3, 0x74, 0xF4, 0x27, 0xBE, 0x7D, 0x40, 0xB5, 0x71, 0xB6, 0xB4, 0x1A, 0xD2, 0xC1,
             0x53, 0xD7,
@@ -568,6 +575,10 @@ mod test {
         assert_eq!(config_response, Ok(ResponseData::AuthenticatorConfig));
         assert_eq!(env.persist().has_force_pin_change(), Ok(true));
         assert!(!client_pin.has_token(&mut env));
+        assert_ne!(
+            storage::persistent_pin_uv_auth_token(&mut env).unwrap(),
+            old_persistent_token
+        );
     }
 
     #[test]
